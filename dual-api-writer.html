@@ -250,6 +250,23 @@
     box-shadow:0 10px 30px #0008; display:none;
   }
   #exportPanel.open{ display:block; }
+  #searchPanel{
+    position:fixed; right:20px; top:64px; width:min(460px, calc(100% - 40px)); max-height:calc(100vh - 90px); overflow-y:auto; z-index:33;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px;
+    box-shadow:0 10px 30px #0008; display:none;
+  }
+  #searchPanel.open{ display:block; }
+  #searchPanel .ol-head{ display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+  #searchPanel .ol-head .spacer{ flex:1; }
+  #searchPanel .x{ background:none; border:1px solid var(--border); color:var(--muted); border-radius:5px; padding:2px 8px; cursor:pointer; }
+  #searchPanel .opts{ display:flex; gap:12px; flex-wrap:wrap; margin-top:8px; font-size:12px; color:var(--muted); }
+  #searchPanel .opts label{ display:flex; align-items:center; gap:4px; margin:0; font-size:12px; }
+  #searchPanel .opts input{ width:auto; }
+  #searchResults{ margin-top:10px; font-size:12.5px; }
+  #searchResults .sr{ padding:5px 0; border-top:1px solid var(--border); cursor:pointer; color:var(--muted); line-height:1.45; }
+  #searchResults .sr:hover{ color:var(--text); }
+  #searchResults .sr b{ color:var(--gold); font-weight:normal; }
+  #searchResults mark{ background:#c9a22744; color:var(--text); border-radius:2px; }
   #exportPanel .ol-head{ display:flex; align-items:center; gap:8px; margin-bottom:4px; }
   #exportPanel .ol-head .spacer{ flex:1; }
   #exportPanel .x{ background:none; border:1px solid var(--border); color:var(--muted); border-radius:5px; padding:2px 8px; cursor:pointer; }
@@ -587,10 +604,30 @@
     <div class="stats" id="wordStats">0 palavras</div>
     <div class="stats" id="ctxMeter"></div>
     <button class="icon" id="outlineBtn" onclick="toggleOutline()" style="display:none;" title="Índice de capítulos">☷ Capítulos</button>
+    <button class="icon" id="searchBtn" onclick="toggleSearch()" title="Procurar e substituir na história">🔍 Procurar</button>
     <button class="icon" id="continuityBtn" onclick="toggleContinuity()" title="Fichas de personagens e cronologia desta história">☺ Continuidade</button>
   </div>
   <div id="outline"></div>
   <div id="continuity"></div>
+  <div id="searchPanel">
+    <div class="ol-head"><b style="font-family:var(--serif);font-weight:400;font-size:16px;">Procurar e substituir</b><span class="spacer"></span>
+      <button class="x" onclick="toggleSearch()">×</button></div>
+    <label>procurar</label>
+    <input type="text" id="searchText" placeholder="ex.: Marco">
+    <label>substituir por</label>
+    <input type="text" id="replaceText" placeholder="ex.: Mateus (vazio = apagar)">
+    <div class="opts">
+      <label><input type="checkbox" id="searchCase"> maiúsculas/minúsculas</label>
+      <label><input type="checkbox" id="searchWord" checked> palavra inteira</label>
+      <label><input type="checkbox" id="searchRegex"> expressão regular</label>
+      <label><input type="checkbox" id="searchBriefs"> incluir indicações</label>
+    </div>
+    <div class="mini-actions" style="margin-top:10px;">
+      <button onclick="runSearch()">procurar</button>
+      <button onclick="replaceAll()">substituir tudo</button>
+    </div>
+    <div id="searchResults"></div>
+  </div>
   <div id="exportPanel">
     <div class="ol-head"><b style="font-family:var(--serif);font-weight:400;font-size:16px;">Exportar</b><span class="spacer"></span>
       <button class="x" onclick="toggleExport()">×</button></div>
@@ -3924,6 +3961,103 @@ function clearStory(){
   updateMeter();
 }
 
+/* ---------------- search & replace ---------------- */
+
+function toggleSearch(){
+  const p = $('searchPanel');
+  p.classList.toggle('open');
+  if(p.classList.contains('open')) setTimeout(() => $('searchText').focus(), 0);
+}
+
+function searchRegex(){
+  const q = $('searchText').value;
+  if(!q) return null;
+  let body = $('searchRegex').checked ? q : escapeRegExp(q).replace(/\s+/g, '\\s+');
+  if($('searchWord').checked) body = `(?<![\\p{L}\\p{N}_])(?:${body})(?![\\p{L}\\p{N}_])`;
+  try{ return new RegExp(body, 'gu' + ($('searchCase').checked ? '' : 'i')); }
+  catch(e){ setStatus('expressão regular inválida: ' + e.message, true); return null; }
+}
+
+// Entries searched: chapters (and briefs, if asked), with a display label.
+function searchTargets(){
+  const out = [];
+  let ch = 0;
+  history.forEach(h => {
+    if(h.role === 'assistant'){ ch++; out.push({entry: h, label: mode === 'author' ? `Cap. ${ch}${h.title ? ' · ' + h.title : ''}` : `Resposta ${ch}`}); }
+    else if($('searchBriefs').checked) out.push({entry: h, label: `Indicação${ch ? ' após cap. ' + ch : ''}`});
+  });
+  return out;
+}
+
+function runSearch(){
+  const re = searchRegex();
+  const box = $('searchResults');
+  box.innerHTML = '';
+  if(!re) return;
+  let total = 0;
+  const MAX_SHOWN = 200;
+  for(const {entry, label} of searchTargets()){
+    re.lastIndex = 0;
+    let m;
+    while((m = re.exec(entry.content))){
+      if(!m[0].length){ re.lastIndex++; continue; }
+      total++;
+      if(total > MAX_SHOWN) continue;
+      const a = m.index, b = a + m[0].length;
+      const row = document.createElement('div');
+      row.className = 'sr';
+      const lab = document.createElement('b');
+      lab.textContent = label + ': ';
+      const before = document.createTextNode((a > 50 ? '…' : '') + entry.content.slice(Math.max(0, a - 50), a).replace(/\s+/g, ' '));
+      const mark = document.createElement('mark');
+      mark.textContent = m[0];
+      const after = document.createTextNode(entry.content.slice(b, b + 50).replace(/\s+/g, ' ') + (b + 50 < entry.content.length ? '…' : ''));
+      row.append(lab, before, mark, after);
+      row.onclick = () => jumpTo(entry);
+      box.appendChild(row);
+    }
+  }
+  const head = document.createElement('div');
+  head.className = 'hint';
+  head.style.marginBottom = '4px';
+  head.textContent = total ? `${total} ocorrências${total > MAX_SHOWN ? ` (a mostrar ${MAX_SHOWN})` : ''} — clica para ir ao sítio.` : 'Nada encontrado.';
+  box.prepend(head);
+}
+
+function replaceAll(){
+  if(generating){ setStatus('espera que a geração acabe antes de substituir.', true); return; }
+  const re = searchRegex();
+  if(!re) return;
+  const rep = $('replaceText').value;
+  // Count first, so the confirmation says exactly what will change.
+  let count = 0, entries = 0;
+  const targets = searchTargets();
+  for(const {entry} of targets){
+    const n = (entry.content.match(re) || []).filter(Boolean).length;
+    if(n){ count += n; entries++; }
+  }
+  if(!count){ setStatus('nada para substituir.'); return; }
+  if(!confirm(`Substituir ${count} ocorrências em ${entries} entradas por "${rep}"? Os capítulos alterados guardam a versão anterior em "versões".`)) return;
+  const note = `antes de substituir "${$('searchText').value.slice(0, 30)}"`;
+  for(const {entry} of targets){
+    re.lastIndex = 0;
+    if(!re.test(entry.content)) continue;
+    re.lastIndex = 0;
+    // $-patterns ($1, $&) only make sense in regex mode; escape them otherwise.
+    const replacement = $('searchRegex').checked ? rep : rep.replace(/\$/g, '$$$$');
+    if(entry.role === 'assistant') entry.versions = pushVersion(entry.versions, entry, note);
+    entry.content = entry.content.replace(re, replacement);
+    if(entry.role === 'assistant'){
+      entry.words = wordCount(entry.content);
+      if(entry.variants) syncVariant(entry);
+    }
+  }
+  rerenderAll();
+  updateStats();
+  runSearch();
+  setStatus(`${count} ocorrências substituídas em ${entries} entradas.`);
+}
+
 /* ---------------- export: txt / md / epub / docx ---------------- */
 
 function toggleExport(){
@@ -4461,6 +4595,8 @@ $('writeMode').addEventListener('change', updatePipelineOptions);
 
 // "variante com <outro>" buttons name the provider that is not selected.
 $('activeProvider').addEventListener('change', () => { if(chats[currentChatId]) rerenderAllNoSave(); });
+
+$('searchText').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); runSearch(); } });
 
 $('input').addEventListener('keydown', (e)=>{
   if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){

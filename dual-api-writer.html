@@ -448,12 +448,20 @@
       </div>
     </div>
     <p class="hint" id="floorWarning" style="color:#e0a86b; display:none;"></p>
+    <div class="checkline">
+      <input type="checkbox" id="floorInChat">
+      <label style="margin:0;">aplicar o piso também no modo Chat (por defeito só no Modo Autor)</label>
+    </div>
     <p class="hint">O piso força continuações mesmo quando o modelo decide parar sozinho (finish_reason "stop") antes de atingir esse número de palavras — é a causa mais comum de respostas curtas apesar de max_tokens alto. Ex.: 5000 para bater o mínimo do teu sistema de escrita.</p>
     <div class="checkline">
       <input type="checkbox" id="failover" checked>
       <label style="margin:0;">failover: se o provider escolhido falhar (depois das novas tentativas), usar o outro</label>
     </div>
     <p class="hint" id="failoverHint"></p>
+    <div class="checkline">
+      <input type="checkbox" id="failoverImmediate">
+      <label style="margin:0;">failover imediato: mudar logo ao primeiro erro, sem novas tentativas</label>
+    </div>
     <label>modo de escrita (Modo Autor)</label>
     <select id="writeMode">
       <option value="direct">direto — o modelo escreve logo o capítulo</option>
@@ -553,6 +561,8 @@
     <label>Adicionar ficheiros (.md, .txt, .json de worldbook do SillyTavern)</label>
     <input type="file" id="lorebookInput" multiple accept=".md,.markdown,.txt,.json">
     <div class="mini-actions"><button onclick="newLoreEntry()">+ nova entrada de texto</button></div>
+    <label>limite de lore por pedido (palavras, 0 = sem limite)</label>
+    <input type="number" id="loreBudget" value="0" min="0" step="500">
     <div id="lorebookList" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;"></div>
     <p class="hint">O check ativa o ficheiro <b>nesta história</b>. Um ficheiro de texto é enviado sempre, a não ser que a primeira linha seja <code>keys: nome, alcunha</code> — aí só entra quando uma dessas palavras aparece na indicação, no fim do capítulo anterior ou no resumo. Worldbooks do SillyTavern usam as chaves e entradas "constant" de cada entrada. Clica no nome para ver/editar.</p>
   </fieldset>
@@ -653,6 +663,7 @@ function applyModeUI(m){
   $('planBtn').style.display = m === 'author' ? '' : 'none';
   if(m !== 'author') $('outline').classList.remove('open');
   $('mode-chat').classList.toggle('active', m==='chat');
+  if(typeof updateFloorWarning === 'function' && $('floorWarning')) updateFloorWarning();
   $('mode-author').classList.toggle('active', m==='author');
   $('input').placeholder = m === 'chat'
     ? 'Escreve aqui...'
@@ -1087,11 +1098,11 @@ function selectLore(scanText, chat){
     if(f.type === 'worldbook'){
       for(const e of f.entries){
         if(!e.enabled) continue;
-        if(e.constant || e.keys.some(k => keyMatches(k, scanText))) hits.push({title: e.name, content: e.content, order: e.order});
+        if(e.constant || e.keys.some(k => keyMatches(k, scanText))) hits.push({title: e.name, content: e.content, order: e.order, always: e.constant});
       }
     } else {
       const {keys, body} = parseTextLore(f.content);
-      if(!keys.length || keys.some(k => keyMatches(k, scanText))) hits.push({title: f.name, content: body, order: 100});
+      if(!keys.length || keys.some(k => keyMatches(k, scanText))) hits.push({title: f.name, content: body, order: 100, always: !keys.length});
     }
   }
   return hits.sort((a, b) => a.order - b.order);
@@ -1311,7 +1322,23 @@ function buildContext(hist){
     lastAssistant ? tailWords(lastAssistant.content, 1500) : '',
     summary
   ].join('\n');
-  const loreHits = selectLore(scanText, chat);
+  // Lore budget: always-sent entries first, then keyword hits, each in
+  // order; whatever does not fit is left out (and reported in the meter).
+  const allLoreHits = selectLore(scanText, chat);
+  const loreBudget = parseInt($('loreBudget').value, 10) || 0;
+  const loreHits = [], loreDropped = [];
+  if(loreBudget > 0){
+    let used = 0;
+    for(const h of [...allLoreHits.filter(x => x.always), ...allLoreHits.filter(x => !x.always)]){
+      const w = wordCount(h.content);
+      if(used + w > loreBudget){ loreDropped.push(h.title); continue; }
+      loreHits.push(h);
+      used += w;
+    }
+    loreHits.sort((a, b) => a.order - b.order);
+  } else {
+    loreHits.push(...allLoreHits);
+  }
   const charHits = selectCharacters(scanText, chat);
   const charText = charHits.map(characterSheetText).join('\n\n');
   const timelineText = chat.sendTimeline ? timelineAsText(chat.timeline || []) : '';
@@ -1347,6 +1374,7 @@ function buildContext(hist){
       system: estTokens(wordCount(sys) + wordCount(proseRules)),
       lore: estTokens(wordCount(loreText)),
       loreHits: loreHits.map(h => h.title),
+      loreDropped,
       continuity: estTokens(wordCount(charText) + wordCount(timelineText)),
       charHits: charHits.map(c => c.name),
       summary: useSummary ? estTokens(wordCount(summary)) : 0,
@@ -1380,6 +1408,7 @@ function renderMeter(){
   const detail =
     `Próximo pedido ≈ ${fmtK(total)} tokens\n` +
     `sistema ${fmtK(s.system)} · lore ${fmtK(s.lore)} (${s.loreHits.length} entradas${s.loreHits.length ? ': ' + s.loreHits.join(', ') : ''})\n` +
+    (s.loreDropped.length ? `⚠ lore cortado pelo limite: ${s.loreDropped.join(', ')}\n` : '') +
     `fichas/cronologia ${fmtK(s.continuity)}${s.charHits.length ? ' (' + s.charHits.join(', ') + ')' : ''}\n` +
     `resumo ${fmtK(s.summary)} · histórico ${fmtK(s.history)} (${s.kept}/${s.total} entradas)` +
     (s.summaryMissing ? `\n⚠ ${s.omitted} entradas cortadas sem resumo — o modelo não as vê.` : '') +
@@ -1509,7 +1538,7 @@ async function callProvider(letter, messages, opts = {}){
         if(userSignal && userSignal.aborted) throw abortError();
         if(timedOut || err instanceof TypeError){
           clearTimeout(timer);
-          if(attempt < MAX_RETRIES){
+          if(attempt < retriesFor(letter)){
             await retryBackoff(attempt, null, timedOut ? `${cfg.label} sem resposta` : `erro de rede com ${cfg.label}`, userSignal);
             continue;
           }
@@ -1520,7 +1549,7 @@ async function callProvider(letter, messages, opts = {}){
       }
       if(!res.ok){
         const text = await res.text().catch(()=> '');
-        if(attempt < MAX_RETRIES && RETRY_STATUSES.has(res.status)){
+        if(attempt < retriesFor(letter) && RETRY_STATUSES.has(res.status)){
           clearTimeout(timer);
           await retryBackoff(attempt, res.headers.get('Retry-After'), `${cfg.label} respondeu ${res.status}`, userSignal);
           continue;
@@ -1675,6 +1704,15 @@ function providerReady(letter){
 // Runs run(letter); if it fails for any reason other than "Parar" and
 // failover is on, runs it once more on the other provider (if configured).
 // Returns {value, letter, note}; `letter` is the provider that succeeded.
+let failoverRunning = false; // true while withFailover is on its second provider
+
+// With "failover imediato", the first provider gets no retries when there is
+// a ready provider to fall back to; the fallback itself still retries.
+function retriesFor(letter){
+  const immediate = $('failover').checked && $('failoverImmediate').checked && !failoverRunning && providerReady(otherProvider(letter));
+  return immediate ? 0 : MAX_RETRIES;
+}
+
 async function withFailover(letter, run){
   try{
     return {value: await run(letter), letter, note: ''};
@@ -1687,11 +1725,13 @@ async function withFailover(letter, run){
     startGenTimer(`${failed} falhou — a tentar ${next}...`);
     let value;
     try{
+      failoverRunning = true;
       value = await run(other);
     }catch(err2){
       if(err2.name !== 'AbortError') err2.message = `${failed}: ${reason} · ${err2.message}`;
       throw err2;
     }
+    finally{ failoverRunning = false; }
     return {value, letter: other, note: `${failed} falhou (${reason}) — usado ${next}.`};
   }
 }
@@ -1706,7 +1746,9 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
   const {onProgress, onStream, baseWords = 0} = opts;
   const autoOn = $('autoContinue').checked;
   const maxCont = parseInt($('maxContinues').value, 10) || 0;
-  const floor = opts.floor ?? (parseInt($('wordFloor').value, 10) || 0);
+  // The floor is for chapters; chat replies ignore it unless asked.
+  const floorApplies = mode === 'author' || $('floorInChat').checked;
+  const floor = opts.floor ?? (floorApplies ? (parseInt($('wordFloor').value, 10) || 0) : 0);
 
   let full = '';
   const labels = [];      // providers that wrote part of this text, in order
@@ -4295,7 +4337,7 @@ $('importInput').addEventListener('change', async (e) => {
 
 // Global settings (providers, generation). The system prompt, summary and
 // lore selection are per story and live in the story itself.
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider','exportAuthor','exportStrip'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','floorInChat','failover','failoverImmediate','loreBudget','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider','exportAuthor','exportStrip'];
 const KEY_IDS = ['pA-key', 'pB-key'];
 const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
 
@@ -4339,10 +4381,12 @@ function updateFloorWarning(){
   let msg = '';
   if(floor > 0 && !$('autoContinue').checked) msg = 'O piso não tem efeito: a continuação automática está desligada.';
   else if(floor > 0 && maxCont === 0) msg = 'O piso não tem efeito com "máx. continuações" a 0 — cada continuação é um pedido extra; usa pelo menos 3–6.';
+  else if(floor > 0 && mode !== 'author' && !$('floorInChat').checked) msg = 'No modo Chat o piso não se aplica (só no Modo Autor) — marca a opção abaixo para o usar também aqui.';
   $('floorWarning').textContent = msg;
   $('floorWarning').style.display = msg ? 'block' : 'none';
 }
-['wordFloor', 'maxContinues', 'autoContinue'].forEach(id => $(id).addEventListener('input', updateFloorWarning));
+['wordFloor', 'maxContinues', 'autoContinue', 'floorInChat'].forEach(id => $(id).addEventListener('input', updateFloorWarning));
+$('floorInChat').addEventListener('change', updateFloorWarning);
 
 // Failover needs the *other* provider fully configured; say so instead of
 // silently doing nothing.
@@ -4401,7 +4445,7 @@ $('storySummary').addEventListener('input', () => {
   persistChats();
   updateMeter();
 });
-['input', 'contextWords'].forEach(id => $(id).addEventListener('input', updateMeter));
+['input', 'contextWords', 'loreBudget'].forEach(id => $(id).addEventListener('input', updateMeter));
 
 window.addEventListener('beforeunload', (e) => {
   flushPersist();

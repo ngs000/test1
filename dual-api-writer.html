@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dual-API Writer</title>
+<style>
+  :root{
+    --bg: #17151d;
+    --panel: #201d29;
+    --panel-2: #29253355;
+    --border: #383246;
+    --text: #ece7ee;
+    --muted: #9b93a8;
+    --accent: #a5384a;
+    --accent-soft: #a5384a33;
+    --gold: #c9a227;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    display:flex;
+    height:100vh;
+    overflow:hidden;
+  }
+  /* ---------- sidebar ---------- */
+  #sidebar{
+    width:340px;
+    min-width:340px;
+    background:var(--panel);
+    border-right:1px solid var(--border);
+    overflow-y:auto;
+    padding:20px;
+    display:flex;
+    flex-direction:column;
+    gap:22px;
+  }
+  #sidebar.collapsed{ display:none; }
+  h1{
+    font-family:var(--serif);
+    font-size:22px;
+    font-weight:400;
+    letter-spacing:0.3px;
+    margin:0 0 2px 0;
+  }
+  .subtitle{ color:var(--muted); font-size:12.5px; margin:0 0 8px 0; }
+  fieldset{
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:12px 14px 14px;
+    margin:0;
+  }
+  legend{
+    font-size:12px;
+    text-transform:none;
+    color:var(--muted);
+    padding:0 6px;
+  }
+  label{ display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  label:first-of-type{ margin-top:0; }
+  input[type=text], input[type=password], input[type=number], textarea, select{
+    width:100%;
+    background:#12101a;
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:5px;
+    padding:8px 9px;
+    font-size:13px;
+    font-family:var(--sans);
+  }
+  input:focus, textarea:focus, select:focus{
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color:var(--accent);
+  }
+  .row{ display:flex; gap:8px; }
+  .row > div{ flex:1; }
+  .toggle-key{
+    display:flex; align-items:center; gap:6px; margin-top:6px; font-size:11.5px; color:var(--muted); cursor:pointer;
+  }
+  .lore{ min-height:110px; resize:vertical; font-family:var(--sans); font-size:12.5px; line-height:1.5; }
+  .gen-settings .row{ margin-top:10px; }
+  .checkline{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text); margin-top:10px; }
+  .checkline input{ width:auto; }
+  .hint{ font-size:11px; color:var(--muted); margin-top:6px; line-height:1.4; }
+  .lore-item{ display:flex; align-items:center; gap:7px; font-size:12px; background:#12101a; border:1px solid var(--border); border-radius:5px; padding:5px 8px; }
+  .lore-item .name{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lore-item .count{ color:var(--muted); font-size:10.5px; white-space:nowrap; }
+  .lore-item button{ background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:0 2px; line-height:1; }
+  .lore-item button:hover{ color:#e06b6b; }
+  input[type=file]{ font-size:12px; color:var(--muted); }
+  .chat-item{ display:flex; align-items:center; gap:6px; font-size:12.5px; background:#12101a; border:1px solid var(--border); border-radius:5px; padding:7px 9px; cursor:pointer; }
+  .chat-item.active{ border-color:var(--accent); background:var(--accent-soft); }
+  .chat-item .title{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chat-item .del{ background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:0 2px; }
+  .chat-item .del:hover{ color:#e06b6b; }
+
+  /* ---------- main ---------- */
+  #main{ flex:1; display:flex; flex-direction:column; min-width:0; }
+  #topbar{
+    display:flex; align-items:center; gap:14px;
+    padding:12px 20px;
+    border-bottom:1px solid var(--border);
+    background:var(--panel);
+  }
+  #topbar button.icon{
+    background:none; border:1px solid var(--border); color:var(--muted);
+    border-radius:5px; padding:6px 9px; cursor:pointer; font-size:13px;
+  }
+  .mode-toggle{ display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .mode-toggle button{
+    background:var(--panel); color:var(--muted); border:none; padding:7px 16px;
+    font-size:12.5px; cursor:pointer;
+  }
+  .mode-toggle button.active{ background:var(--accent-soft); color:var(--text); }
+  .active-provider{
+    margin-left:auto; display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted);
+  }
+  .active-provider select{ width:auto; padding:6px 8px; }
+  .stats{ font-size:11.5px; color:var(--muted); white-space:nowrap; }
+
+  #log{
+    flex:1; overflow-y:auto; padding:30px 8%; display:flex; flex-direction:column; gap:18px;
+  }
+  .entry{ max-width:760px; }
+  .entry.user{ align-self:flex-end; width:100%; }
+  .entry .meta{
+    font-size:11px; color:var(--muted); margin-bottom:5px; display:flex; gap:8px; align-items:center;
+  }
+  .entry .meta .badge{
+    border:1px solid var(--border); border-radius:4px; padding:1px 6px; color:var(--gold);
+  }
+  .entry.user .bubble{
+    background:var(--panel-2); border:1px solid var(--border); border-radius:8px;
+    padding:12px 14px; font-size:14px; white-space:pre-wrap;
+  }
+  .entry.assistant .bubble{
+    font-family:var(--serif); font-size:16.5px; line-height:1.75; white-space:pre-wrap;
+    color:#f1ece5;
+  }
+  .entry.system-note{ align-self:center; color:var(--muted); font-size:12px; font-style:italic; }
+  .chapter-divider{
+    align-self:stretch; display:flex; align-items:center; gap:12px; color:var(--gold);
+    font-family:var(--serif); font-size:13px; margin:10px 0;
+  }
+  .chapter-divider::before, .chapter-divider::after{
+    content:""; flex:1; height:1px; background:var(--border);
+  }
+  .entry-actions{ margin-top:6px; display:flex; gap:10px; }
+  .entry-actions button{
+    background:none; border:none; color:var(--muted); font-size:11px; cursor:pointer; padding:0;
+  }
+  .entry-actions button:hover{ color:var(--text); }
+
+  #composer{
+    border-top:1px solid var(--border); background:var(--panel); padding:14px 20px 16px;
+  }
+  #composer textarea{
+    width:100%; min-height:70px; max-height:220px; resize:vertical;
+    font-family:var(--sans); font-size:14px; line-height:1.5;
+  }
+  #composer .bar{ display:flex; align-items:center; gap:10px; margin-top:10px; }
+  #composer .bar .spacer{ flex:1; }
+  button.primary{
+    background:var(--accent); color:#fff; border:none; border-radius:6px;
+    padding:9px 18px; font-size:13.5px; cursor:pointer;
+  }
+  button.primary:disabled{ opacity:0.5; cursor:default; }
+  button.secondary{
+    background:none; border:1px solid var(--border); color:var(--text);
+    border-radius:6px; padding:9px 14px; font-size:13px; cursor:pointer;
+  }
+  button.secondary:hover{ border-color:var(--accent); }
+  #status{ font-size:12px; color:var(--muted); min-height:16px; }
+  #status.error{ color:#e06b6b; }
+
+  @media (max-width: 768px){
+    #sidebar{
+      position: fixed;
+      inset: 0 20% 0 0;
+      z-index: 20;
+      height: 100vh;
+    }
+    #sidebar.collapsed{ display:none; }
+    #log{ padding: 20px 4%; }
+    .stats{ display:none; }
+    .mode-toggle button{ padding:6px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div>
+    <h1>Dual-API Writer</h1>
+    <p class="subtitle">Duas APIs, um só fluxo de escrita.</p>
+  </div>
+
+  <fieldset>
+    <legend>Histórias</legend>
+    <button class="secondary" style="width:100%;" onclick="newChat()">+ Nova história</button>
+    <div id="chatList" style="margin-top:10px; display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto;"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Provider A</legend>
+    <label>Nome</label>
+    <input type="text" id="pA-label" value="GLM">
+    <label>Base URL (chat/completions)</label>
+    <input type="text" id="pA-url" value="https://api.z.ai/api/paas/v4/chat/completions">
+    <label>Modelo</label>
+    <input type="text" id="pA-model" value="glm-4.6">
+    <label>API Key</label>
+    <input type="password" id="pA-key" placeholder="sk-...">
+    <label class="toggle-key"><input type="checkbox" onchange="toggleKeyVisibility('pA-key', this)"> mostrar chave</label>
+    <div class="row">
+      <div>
+        <label>max_tokens</label>
+        <input type="number" id="pA-maxTokens" value="8000" min="256" step="256">
+      </div>
+      <div>
+        <label>temperatura</label>
+        <input type="number" id="pA-temperature" value="1.0" min="0" max="2" step="0.05">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Thinking</label>
+        <select id="pA-thinking">
+          <option value="auto">Automático</option>
+          <option value="enabled">Ativado</option>
+          <option value="disabled">Desativado</option>
+        </select>
+      </div>
+      <div>
+        <label>Reasoning effort</label>
+        <select id="pA-reasoningEffort">
+          <option value="auto">Automático</option>
+          <option value="off">off</option>
+          <option value="low">low</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Provider B</legend>
+    <label>Nome</label>
+    <input type="text" id="pB-label" value="NanoGPT">
+    <label>Base URL (chat/completions)</label>
+    <input type="text" id="pB-url" value="https://nano-gpt.com/api/v1/chat/completions">
+    <label>Modelo</label>
+    <input type="text" id="pB-model" value="deepseek-ai/DeepSeek-V3">
+    <label>API Key</label>
+    <input type="password" id="pB-key" placeholder="sk-...">
+    <label class="toggle-key"><input type="checkbox" onchange="toggleKeyVisibility('pB-key', this)"> mostrar chave</label>
+    <div class="row">
+      <div>
+        <label>max_tokens</label>
+        <input type="number" id="pB-maxTokens" value="8000" min="256" step="256">
+      </div>
+      <div>
+        <label>temperatura</label>
+        <input type="number" id="pB-temperature" value="1.0" min="0" max="2" step="0.05">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Thinking</label>
+        <select id="pB-thinking">
+          <option value="auto">Automático</option>
+          <option value="enabled">Ativado</option>
+          <option value="disabled">Desativado</option>
+        </select>
+      </div>
+      <div>
+        <label>Reasoning effort</label>
+        <select id="pB-reasoningEffort">
+          <option value="auto">Automático</option>
+          <option value="off">off</option>
+          <option value="low">low</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="gen-settings">
+    <legend>Geração</legend>
+    <div class="checkline">
+      <input type="checkbox" id="autoContinue" checked>
+      <label style="margin:0;">continuar automaticamente se cortar (finish_reason = length)</label>
+    </div>
+    <div class="row">
+      <div>
+        <label>máx. continuações</label>
+        <input type="number" id="maxContinues" value="6" min="0" max="20">
+      </div>
+      <div>
+        <label>piso de palavras (0 = desligado)</label>
+        <input type="number" id="wordFloor" value="0" min="0" step="500">
+      </div>
+    </div>
+    <p class="hint">O piso força continuações mesmo quando o modelo decide parar sozinho (finish_reason "stop") antes de atingir esse número de palavras — é a causa mais comum de respostas curtas apesar de max_tokens alto. Ex.: 5000 para bater o mínimo do teu sistema de escrita.</p>
+    <p class="hint">"Automático" não envia o campo de thinking/reasoning — o provider usa o próprio default. Cada continuação reenvia o histórico + o texto parcial e pede para retomar exatamente onde parou.</p>
+    <label>Proxy local (opcional — resolve erros de CORS)</label>
+    <input type="text" id="proxyUrl" value="http://localhost:8787/proxy" placeholder="http://localhost:8787/proxy (deixa vazio para chamada direta)">
+    <p class="hint">Já vem preenchido para usar com o server.py/start.bat incluídos. Se a API der "Failed to fetch" / erro de CORS, confirma que o server.py está a correr. Com o campo vazio, a ferramenta chama a API diretamente.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Instruções de Sistema</legend>
+    <textarea id="systemPrompt" class="lore" placeholder="Sistema de escrita, regras de estilo, tom, POV, anti-slop, etc. Enviado em todos os pedidos como mensagem de sistema."></textarea>
+  </fieldset>
+
+  <fieldset>
+    <legend>Lorebook (ficheiros)</legend>
+    <label>Adicionar ficheiros (.md, .txt, .json)</label>
+    <input type="file" id="lorebookInput" multiple accept=".md,.markdown,.txt,.json">
+    <div id="lorebookList" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;"></div>
+    <p class="hint">Cada ficheiro com o check ativo é enviado em todos os pedidos (mensagem de sistema, com o nome como cabeçalho). Desmarca para excluir sem apagar. Guardado localmente no browser.</p>
+  </fieldset>
+
+  <button class="secondary" onclick="clearStory()">Limpar história atual</button>
+</div>
+
+<div id="main">
+  <div id="topbar">
+    <button class="icon" onclick="toggleSidebar()" aria-label="Mostrar/ocultar barra lateral">☰</button>
+    <div class="mode-toggle">
+      <button id="mode-chat" class="active" onclick="setMode('chat')">Chat</button>
+      <button id="mode-author" onclick="setMode('author')">Modo Autor</button>
+    </div>
+    <div class="active-provider">
+      a gerar com
+      <select id="activeProvider">
+        <option value="A">Provider A</option>
+        <option value="B">Provider B</option>
+      </select>
+    </div>
+    <div class="stats" id="wordStats">0 palavras</div>
+  </div>
+
+  <div id="log"></div>
+
+  <div id="composer">
+    <textarea id="input" placeholder="Escreve aqui..."></textarea>
+    <div class="bar">
+      <button class="secondary" id="continueBtn" onclick="manualContinue()" style="display:none;">Continuar geração</button>
+      <div class="spacer"></div>
+      <span id="status"></span>
+      <button class="secondary" onclick="downloadStory()">Descarregar .txt</button>
+      <button class="secondary" onclick="downloadJSON()">Backup .json</button>
+      <button class="secondary" onclick="copyStory()">Copiar tudo</button>
+      <button class="secondary" id="stopBtn" onclick="stopGeneration()" style="display:none; border-color:var(--accent); color:var(--accent);">Parar</button>
+      <button class="primary" id="sendBtn" onclick="send()">Gerar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let mode = 'chat';           // 'chat' | 'author'
+let history = [];            // {role:'user'|'assistant', content, provider, words, chapter?}
+let chapterCount = 0;
+let lastAssistantEntry = null;
+let editingIndex = null;
+
+const $ = id => document.getElementById(id);
+
+function toggleSidebar(){ $('sidebar').classList.toggle('collapsed'); }
+
+function toggleKeyVisibility(id, checkbox){
+  $(id).type = checkbox.checked ? 'text' : 'password';
+}
+
+function setMode(m){
+  mode = m;
+  $('mode-chat').classList.toggle('active', m==='chat');
+  $('mode-author').classList.toggle('active', m==='author');
+  $('input').placeholder = m === 'chat'
+    ? 'Escreve aqui...'
+    : 'Indicação para o próximo capítulo (o que deve acontecer, tom, ponto de vista, etc.)';
+  saveHistory();
+}
+
+function wordCount(str){
+  return (str.trim().match(/\S+/g) || []).length;
+}
+
+function updateStats(){
+  const total = history.filter(h=>h.role==='assistant').reduce((s,h)=>s+h.words,0);
+  const approxTokens = Math.round(total * 1.35);
+  $('wordStats').textContent = `${total} palavras geradas (~${approxTokens.toLocaleString('pt-PT')} tokens)`;
+}
+
+function providerConfig(letter){
+  return {
+    label: $('p'+letter+'-label').value.trim() || letter,
+    url: $('p'+letter+'-url').value.trim(),
+    model: $('p'+letter+'-model').value.trim(),
+    key: $('p'+letter+'-key').value.trim(),
+    maxTokens: parseInt($('p'+letter+'-maxTokens').value, 10) || 4096,
+    temperature: parseFloat($('p'+letter+'-temperature').value),
+    thinking: $('p'+letter+'-thinking').value,
+    reasoningEffort: $('p'+letter+'-reasoningEffort').value
+  };
+}
+
+function setStatus(msg, isError){
+  const el = $('status');
+  el.textContent = msg;
+  el.className = isError ? 'error' : '';
+}
+
+function renderEntry(entry, idx){
+  if(!entry) return;
+  const log = $('log');
+
+  if(entry.role === 'assistant' && mode === 'author'){
+    chapterCount++;
+    entry.chapter = chapterCount;
+    const div = document.createElement('div');
+    div.className = 'chapter-divider';
+    div.textContent = 'Capítulo ' + chapterCount;
+    log.appendChild(div);
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'entry ' + entry.role;
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  if(entry.role === 'user'){
+    meta.innerHTML = mode === 'author' ? 'Indicação' : 'Tu';
+  } else {
+    meta.innerHTML = `<span class="badge">${entry.provider}</span> ${entry.words} palavras${entry.finishReason ? ` · parou por: ${entry.finishReason}` : ''}`;
+  }
+  wrap.appendChild(meta);
+
+  if(idx === editingIndex){
+    const ta = document.createElement('textarea');
+    ta.value = entry.content;
+    ta.style.width = '100%';
+    ta.style.minHeight = '160px';
+    ta.style.background = '#12101a';
+    ta.style.color = 'var(--text)';
+    ta.style.border = '1px solid var(--accent)';
+    ta.style.borderRadius = '6px';
+    ta.style.padding = '10px';
+    ta.style.fontFamily = entry.role === 'assistant' ? 'var(--serif)' : 'var(--sans)';
+    ta.style.fontSize = entry.role === 'assistant' ? '15px' : '14px';
+    ta.style.lineHeight = '1.6';
+    wrap.appendChild(ta);
+
+    const editBar = document.createElement('div');
+    editBar.className = 'entry-actions';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'guardar';
+    saveBtn.onclick = () => saveEdit(idx, ta.value);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'cancelar';
+    cancelBtn.onclick = cancelEdit;
+    editBar.append(saveBtn, cancelBtn);
+    wrap.appendChild(editBar);
+
+    log.appendChild(wrap);
+    return;
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = entry.content;
+  wrap.appendChild(bubble);
+
+  const actions = document.createElement('div');
+  actions.className = 'entry-actions';
+  const editBtn = document.createElement('button');
+  editBtn.textContent = 'editar';
+  editBtn.onclick = () => startEdit(idx);
+  actions.appendChild(editBtn);
+  if(entry.role === 'assistant'){
+    const regenBtn = document.createElement('button');
+    regenBtn.textContent = 'regenerar';
+    regenBtn.onclick = () => regenerate(idx);
+    actions.appendChild(regenBtn);
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'copiar';
+    copyBtn.onclick = () => navigator.clipboard.writeText(entry.content);
+    actions.appendChild(copyBtn);
+  }
+  const delBtn = document.createElement('button');
+  delBtn.textContent = 'apagar';
+  delBtn.onclick = () => deleteEntry(idx);
+  actions.appendChild(delBtn);
+  wrap.appendChild(actions);
+
+  log.appendChild(wrap);
+  log.scrollTop = log.scrollHeight;
+}
+
+function startEdit(idx){ editingIndex = idx; rerenderAll(); }
+function cancelEdit(){ editingIndex = null; rerenderAll(); }
+
+function saveEdit(idx, value){
+  history[idx].content = value;
+  if(history[idx].role === 'assistant') history[idx].words = wordCount(value);
+  if(history[idx] === lastAssistantEntry) lastAssistantEntry = history[idx];
+  editingIndex = null;
+  rerenderAll();
+  updateStats();
+}
+
+async function regenerate(idx){
+  const entry = history[idx];
+  if(!entry || entry.role !== 'assistant') return;
+  const letter = $('activeProvider').value;
+  $('sendBtn').disabled = true;
+  $('stopBtn').style.display = 'inline-block';
+  abortController = new AbortController();
+  try{
+    const priorHistory = history.slice(0, idx);
+    const messages = buildMessages(null, priorHistory);
+    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
+    // Re-locate by object identity instead of the original idx: the history
+    // array may have been edited/deleted while this generation was in
+    // flight, and writing to a stale idx corrupts the array with a hole.
+    const currentIdx = history.indexOf(entry);
+    if(currentIdx === -1){
+      setStatus('a história mudou entretanto — esta regeneração não foi aplicada.', true);
+      return;
+    }
+    history[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
+    if(currentIdx === history.length - 1) lastAssistantEntry = history[currentIdx];
+    rerenderAll();
+    updateStats();
+    setStatus('');
+  }catch(err){
+    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+  }finally{
+    $('sendBtn').disabled = false;
+    $('stopBtn').style.display = 'none';
+    stopGenTimer();
+    abortController = null;
+  }
+}
+
+function deleteEntry(idx){
+  if(!confirm('Apagar esta entrada da história?')) return;
+  const removed = history[idx];
+  history.splice(idx, 1);
+  if(removed === lastAssistantEntry){
+    lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
+    $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
+  }
+  editingIndex = null;
+  rerenderAll();
+  updateStats();
+}
+
+let lorebookFiles = []; // {name, content, active}
+
+function renderLorebookList(){
+  const list = $('lorebookList');
+  list.innerHTML = '';
+  lorebookFiles.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'lore-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = f.active;
+    cb.onchange = () => { f.active = cb.checked; saveLorebooks(); };
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.title = f.name;
+    name.textContent = f.name;
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = wordCount(f.content) + 'w';
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.onclick = () => { lorebookFiles.splice(i,1); renderLorebookList(); };
+    row.append(cb, name, count, del);
+    list.appendChild(row);
+  });
+  saveLorebooks();
+}
+
+function saveLorebooks(){
+  try{ localStorage.setItem('dualApiWriterLorebooks', JSON.stringify(lorebookFiles)); }catch(e){}
+}
+function loadLorebooks(){
+  const raw = localStorage.getItem('dualApiWriterLorebooks');
+  if(!raw) return;
+  try{ lorebookFiles = JSON.parse(raw); renderLorebookList(); }catch(e){}
+}
+
+$('lorebookInput').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files);
+  for(const file of files){
+    const looksLikeText = file.type.startsWith('text/') || /\.(md|markdown|txt|json)$/i.test(file.name);
+    if(!looksLikeText){
+      setStatus(`"${file.name}" não parece um ficheiro de texto — ignorado.`, true);
+      continue;
+    }
+    try{
+      const text = await file.text();
+      lorebookFiles.push({name: file.name, content: text, active: true});
+    }catch(err){
+      setStatus(`Não consegui ler "${file.name}": ${err.message}`, true);
+    }
+  }
+  renderLorebookList();
+  e.target.value = '';
+});
+loadLorebooks();
+
+function buildMessages(userText, hist){
+  hist = hist || history;
+  const sys = $('systemPrompt').value.trim();
+  const loreBlocks = lorebookFiles
+    .filter(f => f.active)
+    .map(f => `### ${f.name}\n${f.content}`)
+    .join('\n\n');
+  const systemParts = [];
+  if(sys) systemParts.push(sys);
+  if(loreBlocks) systemParts.push('## Lorebook\n\n' + loreBlocks);
+
+  const msgs = [];
+  if(systemParts.length) msgs.push({role:'system', content: systemParts.join('\n\n')});
+  for(const h of hist){
+    msgs.push({role: h.role, content: h.content});
+  }
+  if(userText !== null) msgs.push({role:'user', content: userText});
+  return msgs;
+}
+
+async function callProvider(letter, messages){
+  const cfg = providerConfig(letter);
+  if(!cfg.url || !cfg.key || !cfg.model){
+    throw new Error(`Provider ${letter} está incompleto (URL, modelo ou chave em falta).`);
+  }
+  const body = {
+    model: cfg.model,
+    messages: messages,
+    max_tokens: cfg.maxTokens,
+    temperature: cfg.temperature
+  };
+  if(cfg.thinking !== 'auto'){
+    body.thinking = { type: cfg.thinking };
+  }
+  if(cfg.reasoningEffort !== 'auto'){
+    body.reasoning_effort = cfg.reasoningEffort;
+  }
+  const proxyUrl = $('proxyUrl').value.trim();
+  let fetchUrl = cfg.url;
+  let fetchHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + cfg.key
+  };
+  if (proxyUrl) {
+    // Route through the local proxy: it forwards to cfg.url server-side,
+    // sidestepping the browser's CORS restriction on the real API.
+    fetchUrl = proxyUrl;
+    fetchHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + cfg.key,
+      'X-Target-Url': cfg.url
+    };
+  }
+
+  let res;
+  try{
+    res = await fetch(fetchUrl, {
+      method: 'POST',
+      headers: fetchHeaders,
+      body: JSON.stringify(body),
+      signal: abortController ? abortController.signal : undefined
+    });
+  }catch(err){
+    if(err.name === 'AbortError') throw err;
+    if(err instanceof TypeError){
+      throw new Error(`Erro de rede a contactar ${cfg.label}. Se não estás a usar o proxy local, a API pode estar a bloquear pedidos do browser (CORS) — preenche o campo "Proxy local".`);
+    }
+    throw err;
+  }
+  if(!res.ok){
+    const text = await res.text().catch(()=> '');
+    throw new Error(`${cfg.label} respondeu ${res.status}: ${text.slice(0,300)}`);
+  }
+  const data = await res.json();
+  const choice = data.choices && data.choices[0];
+  if(!choice) throw new Error(`${cfg.label}: resposta sem "choices".`);
+  const content = choice.message?.content ?? choice.text ?? '';
+  const finishReason = choice.finish_reason || choice.stop_reason || 'stop';
+  return {content, finishReason, providerLabel: cfg.label};
+}
+
+let abortController = null;
+let genTimerInterval = null;
+let genLabel = '';
+let genStartTs = null;
+
+function tickGenTimer(){
+  if(genStartTs === null) return;
+  const secs = Math.floor((Date.now() - genStartTs) / 1000);
+  setStatus(`${genLabel} ${secs}s`);
+}
+function startGenTimer(label){
+  genLabel = label;
+  genStartTs = Date.now();
+  clearInterval(genTimerInterval);
+  genTimerInterval = setInterval(tickGenTimer, 1000);
+  tickGenTimer();
+}
+function stopGenTimer(){
+  clearInterval(genTimerInterval);
+  genTimerInterval = null;
+  genStartTs = null;
+}
+function stopGeneration(){
+  if(abortController) abortController.abort();
+}
+
+function stripClosingScaffold(text){
+  // Removes a trailing <ledger>...</ledger> [DIRECTIONS]... block. Feeding a
+  // chapter's own closing scaffold back as "the last thing written" reads to
+  // the model as "this chapter is finished" — it then starts a brand new
+  // chapter (new <plan>, new header) instead of extending the current one.
+  const idx = text.indexOf('<ledger>');
+  if(idx === -1) return text;
+  return text.slice(0, idx).trimEnd();
+}
+
+async function generateWithAutoContinue(letter, baseMessages){
+  const autoOn = $('autoContinue').checked;
+  const maxCont = parseInt($('maxContinues').value, 10) || 0;
+  const floor = parseInt($('wordFloor').value, 10) || 0;
+
+  let full = '';
+  let providerLabel = '';
+  let messages = baseMessages.slice();
+  let rounds = 0;
+  let lastFinishReason = 'stop';
+
+  while(true){
+    startGenTimer(rounds === 0 ? 'a gerar...' : `a continuar (${rounds}/${maxCont})...`);
+    const {content, finishReason, providerLabel: pl} = await callProvider(letter, messages);
+    providerLabel = pl;
+    full += content;
+    lastFinishReason = finishReason;
+
+    const cutOff = finishReason === 'length' || finishReason === 'max_tokens';
+    const underFloor = floor > 0 && wordCount(stripClosingScaffold(full)) < floor;
+    if((!cutOff && !underFloor) || !autoOn || rounds >= maxCont) break;
+
+    rounds++;
+    const strippedContent = cutOff ? content : stripClosingScaffold(content);
+    const continuePrompt = cutOff
+      ? 'Continue exactly where you left off, without repeating text already written and without summarizing. Resume mid-sentence if necessary.'
+      : `This chapter has not yet reached the ${floor}-word minimum. Do NOT start a new chapter — do not write a new <plan> or a new time/place header. Continue the SAME scene from exactly here, with more development and more beats, without summarizing or repeating what's already written, without closing the scene early. Only produce a new <ledger> and <self-check> once this chapter is actually finished.`;
+    if(!cutOff){
+      // Keep `full` in sync with what we're feeding back: drop the same
+      // scaffold tail we just stripped, so it isn't duplicated mid-chapter.
+      full = full.slice(0, full.length - (content.length - strippedContent.length));
+    }
+    messages = messages.concat([
+      {role:'assistant', content: strippedContent},
+      {role:'user', content: continuePrompt}
+    ]);
+  }
+  return {content: full, providerLabel, finishReason: lastFinishReason};
+}
+
+async function send(){
+  const inputEl = $('input');
+  const text = inputEl.value.trim();
+  if(!text) return;
+
+  const letter = $('activeProvider').value;
+  $('sendBtn').disabled = true;
+  $('stopBtn').style.display = 'inline-block';
+  abortController = new AbortController();
+
+  const userEntry = {role:'user', content:text};
+  history.push(userEntry);
+  rerenderAll();
+  inputEl.value = '';
+
+  try{
+    const messages = buildMessages(null);
+    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
+    const words = wordCount(content);
+    const assistantEntry = {role:'assistant', content, provider: providerLabel, words, finishReason};
+    history.push(assistantEntry);
+    lastAssistantEntry = assistantEntry;
+    rerenderAll();
+    updateStats();
+    setStatus('');
+    $('continueBtn').style.display = 'inline-block';
+  }catch(err){
+    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+  }finally{
+    $('sendBtn').disabled = false;
+    $('stopBtn').style.display = 'none';
+    stopGenTimer();
+    abortController = null;
+  }
+}
+
+async function manualContinue(){
+  if(!lastAssistantEntry) return;
+  const letter = $('activeProvider').value;
+  $('sendBtn').disabled = true;
+  $('stopBtn').style.display = 'inline-block';
+  abortController = new AbortController();
+  try{
+    const messages = buildMessages(null).concat([
+      {role:'user', content:'Continue exactly where you left off, without repeating text already written.'}
+    ]);
+    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
+    lastAssistantEntry.content += content;
+    lastAssistantEntry.words = wordCount(lastAssistantEntry.content);
+    lastAssistantEntry.finishReason = finishReason;
+    // re-render log fully to update the merged bubble
+    rerenderAll();
+    updateStats();
+    setStatus('');
+  }catch(err){
+    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+  }finally{
+    $('sendBtn').disabled = false;
+    $('stopBtn').style.display = 'none';
+    stopGenTimer();
+    abortController = null;
+  }
+}
+
+function rerenderAllNoSave(){
+  $('log').innerHTML = '';
+  chapterCount = 0;
+  history.forEach((h, i) => renderEntry(h, i));
+}
+
+function rerenderAll(){
+  rerenderAllNoSave();
+  saveHistory();
+}
+
+const CHATS_KEY = 'dualApiWriterChats';
+const CURRENT_CHAT_KEY = 'dualApiWriterCurrentChatId';
+let chats = {};
+let currentChatId = null;
+
+function chatTitleFor(chat){
+  if(chat.title) return chat.title;
+  const firstUser = (chat.history || []).find(h => h.role === 'user');
+  if(firstUser && firstUser.content.trim()) return firstUser.content.trim().slice(0, 42);
+  return 'Nova história';
+}
+
+function persistChats(){
+  try{
+    localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+    localStorage.setItem(CURRENT_CHAT_KEY, currentChatId);
+  }catch(e){
+    setStatus('história longa demais para guardar automaticamente no browser — faz download regularmente.', true);
+  }
+}
+
+function saveHistory(){
+  // Persists the in-memory history/mode into the current chat slot.
+  if(!chats[currentChatId]) chats[currentChatId] = {title: null, updatedAt: Date.now()};
+  chats[currentChatId].history = history;
+  chats[currentChatId].mode = mode;
+  chats[currentChatId].updatedAt = Date.now();
+  if(!chats[currentChatId].title){
+    const firstUser = history.find(h => h.role === 'user');
+    if(firstUser && firstUser.content.trim()) chats[currentChatId].title = firstUser.content.trim().slice(0, 42);
+  }
+  persistChats();
+  renderChatList();
+}
+
+function renderChatList(){
+  const list = $('chatList');
+  list.innerHTML = '';
+  const ids = Object.keys(chats).sort((a,b) => (chats[b].updatedAt||0) - (chats[a].updatedAt||0));
+  for(const id of ids){
+    const chat = chats[id];
+    const row = document.createElement('div');
+    row.className = 'chat-item' + (id === currentChatId ? ' active' : '');
+    row.onclick = () => switchChat(id);
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = chatTitleFor(chat);
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.onclick = (e) => { e.stopPropagation(); deleteChat(id); };
+    row.append(title, del);
+    list.appendChild(row);
+  }
+}
+
+function loadChatIntoMemory(id){
+  const chat = chats[id];
+  currentChatId = id;
+  history = (chat.history || []).filter(Boolean);
+  chapterCount = 0;
+  editingIndex = null;
+  lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
+  const m = chat.mode || 'chat';
+  mode = m;
+  $('mode-chat').classList.toggle('active', m==='chat');
+  $('mode-author').classList.toggle('active', m==='author');
+  $('input').placeholder = m === 'chat'
+    ? 'Escreve aqui...'
+    : 'Indicação para o próximo capítulo (o que deve acontecer, tom, ponto de vista, etc.)';
+  rerenderAllNoSave();
+  updateStats();
+  $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
+}
+
+function newChat(){
+  saveHistory();
+  const id = 'chat_' + Date.now();
+  chats[id] = {title: null, mode: 'chat', history: [], updatedAt: Date.now()};
+  loadChatIntoMemory(id);
+  persistChats();
+  renderChatList();
+}
+
+function switchChat(id){
+  if(id === currentChatId || !chats[id]) return;
+  saveHistory();
+  loadChatIntoMemory(id);
+  persistChats();
+  renderChatList();
+}
+
+function deleteChat(id){
+  if(!confirm('Apagar esta história permanentemente?')) return;
+  delete chats[id];
+  if(id === currentChatId){
+    const remaining = Object.keys(chats).sort((a,b) => (chats[b].updatedAt||0) - (chats[a].updatedAt||0));
+    if(remaining.length){
+      loadChatIntoMemory(remaining[0]);
+    } else {
+      const newId = 'chat_' + Date.now();
+      chats[newId] = {title: null, mode: 'chat', history: [], updatedAt: Date.now()};
+      loadChatIntoMemory(newId);
+    }
+  }
+  persistChats();
+  renderChatList();
+}
+
+function loadChats(){
+  try{ chats = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}'); }catch(e){ chats = {}; }
+  let id = localStorage.getItem(CURRENT_CHAT_KEY);
+
+  if(!id || !chats[id]){
+    // migrate the old single-history storage, if present, into the first chat slot
+    let legacyHistory = [], legacyMode = 'chat';
+    const legacyRaw = localStorage.getItem('dualApiWriterHistory');
+    if(legacyRaw){
+      try{ const d = JSON.parse(legacyRaw); legacyHistory = d.history || []; legacyMode = d.mode || 'chat'; }catch(e){}
+    }
+    id = 'chat_' + Date.now();
+    chats[id] = {title: null, mode: legacyMode, history: legacyHistory, updatedAt: Date.now()};
+  }
+  loadChatIntoMemory(id);
+  persistChats();
+  renderChatList();
+}
+
+function clearStory(){
+  if(!confirm('Limpar toda a história atual desta sessão?')) return;
+  history = [];
+  chapterCount = 0;
+  lastAssistantEntry = null;
+  editingIndex = null;
+  $('log').innerHTML = '';
+  $('continueBtn').style.display = 'none';
+  updateStats();
+  saveHistory();
+}
+
+function compileStory(){
+  let out = '';
+  let ch = 0;
+  for(const h of history){
+    if(h.role === 'assistant'){
+      if(mode === 'author'){
+        ch++;
+        out += `\n\n--- Capítulo ${ch} ---\n\n`;
+      }
+      out += h.content + '\n';
+    }
+  }
+  return out.trim();
+}
+
+function copyStory(){
+  navigator.clipboard.writeText(compileStory());
+  setStatus('copiado.');
+  setTimeout(()=>setStatus(''), 1500);
+}
+
+function downloadStory(){
+  const blob = new Blob([compileStory()], {type:'text/plain;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'historia.txt';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadJSON(){
+  const chat = chats[currentChatId] || {};
+  const payload = {
+    title: chatTitleFor(chat),
+    mode: mode,
+    exportedAt: new Date().toISOString(),
+    history: history
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'historia-backup.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// persist provider config + lore locally (not the chat history)
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','systemPrompt','maxContinues','wordFloor','proxyUrl','activeProvider'];
+function saveConfig(){
+  const cfg = {};
+  for(const id of PERSIST_KEYS) cfg[id] = $(id).value;
+  localStorage.setItem('dualApiWriterConfig', JSON.stringify(cfg));
+}
+function loadConfig(){
+  const raw = localStorage.getItem('dualApiWriterConfig');
+  if(!raw) return;
+  try{
+    const cfg = JSON.parse(raw);
+    for(const id of PERSIST_KEYS) if(cfg[id] !== undefined) $(id).value = cfg[id];
+  }catch(e){}
+}
+PERSIST_KEYS.forEach(id => $(id).addEventListener('change', saveConfig));
+loadConfig();
+loadChats();
+
+$('input').addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
+    e.preventDefault();
+    send();
+  }
+});
+</script>
+</body>
+</html>

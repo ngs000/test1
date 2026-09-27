@@ -37,6 +37,12 @@ Then, in the sidebar:
 - **Continuar geração** extends the last chapter; **regenerar** rewrites one (the original is kept if that fails).
 - **Rever** (revise with instructions): give an instruction ("darken the confession, cut the flashback") for the whole chapter or only a passage you selected. The revision appears below the original with **aceitar / descartar / refazer revisão**; nothing changes until you accept.
 - **Versões**: accepting a revision, regenerating or restoring keeps the previous text (up to 10 per chapter), and any of them can be restored.
+
+**Chapters (Author mode)**
+- Each chapter has a **title** (click the "Capítulo N" divider) and a **status**: rascunho / revisto / final. Titles are included in the `.txt` export.
+- **Planear** saves a brief as a planned chapter without generating it; generate any planned chapter later with **gerar este capítulo**, in place, without touching the chapters after it. Unwritten briefs are never sent as context.
+- **☷ Capítulos** opens the outline: every chapter with title, status, brief and a word-count bar (chapters well below the average are flagged), plus jump, move up/down, rename, merge with the next one, and generate for planned chapters.
+- **dividir** splits a chapter in two at the cursor (click in the text first).
 - Retries with backoff on 429/5xx/network errors (honours `Retry-After`) and a per-request timeout.
 - **Failover**: if the selected provider still fails after retries, the same request goes once to the other provider. Mixed chapters are labelled `A + B`.
 
@@ -71,7 +77,7 @@ Then, in the sidebar:
 Implemented from the audit: all listed bugs (B1–B21), the context manager (F1), lorebook (F2), streaming (F3), failover (part of F4), revision workflow with versions (F5), import (F6), sampling via extra body (F10), resilience (F12). Still open, roughly in order of value:
 
 1. ~~Revision workflow (F5)~~ — done.
-2. **First-class chapters (F7)** — titles, per-chapter brief and status, outline view, reorder, per-chapter word stats.
+2. ~~First-class chapters (F7)~~ — done.
 3. **Variants / swipes (F13)** — keep several generations per brief and switch between them.
 4. **More dual-API modes (rest of F4)** — compare (same brief to both, side by side), outline → prose pipeline, alternating providers between continuation rounds.
 5. **Prose tooling (F9)** — banned-phrase list with highlighter, repetition detector, POV/tense reminders.
@@ -80,6 +86,6 @@ Implemented from the audit: all listed bugs (B1–B21), the context manager (F1)
 8. **Smaller items** — lore token budget cap; option to fail over immediately instead of retrying first; word floor only in Author mode; search & replace; model list from `/models`; request/cost log (F14–F17).
 
 Known limitations:
-- The summary tracks *how many* chapters it covers, not *which*: after deleting or regenerating an earlier chapter, use **refazer do zero**.
+- The summary tracks *how many* chapters it covers, not *which*: after deleting, regenerating, reordering, merging, splitting or generating an earlier chapter, use **refazer do zero** (the app reminds you).
 - Token counts are estimates (words × 1.6).
 - Browser tests were run during development but are not in the repo yet.

@@ -226,6 +226,36 @@
   .versions .ver{ border-top:1px solid var(--border); padding:6px 0; display:flex; gap:10px; align-items:baseline; font-size:12px; }
   .versions .ver:first-of-type{ border-top:none; }
   .versions .ver .what{ flex:1; color:var(--muted); }
+  .chapter-divider .ch-title{ cursor:pointer; }
+  .chapter-divider .ch-title:hover{ text-decoration:underline; }
+  .chapter-divider .ch-status{ font-family:var(--sans); font-size:10.5px; color:var(--muted); border:1px solid var(--border); border-radius:4px; padding:1px 6px; }
+  .chapter-divider .ch-status.final{ color:#7fc98f; border-color:#7fc98f66; }
+  .chapter-divider .ch-status.revisto{ color:var(--gold); border-color:#c9a22766; }
+  .chapter-divider .ch-status.planeado{ color:#8fb3e0; border-color:#8fb3e066; }
+  #outline{
+    position:fixed; top:0; right:0; bottom:0; width:min(440px, 100%); z-index:30;
+    background:var(--panel); border-left:1px solid var(--border); overflow-y:auto; padding:16px 16px 30px;
+    box-shadow:-10px 0 30px #0006; display:none;
+  }
+  #outline.open{ display:block; }
+  #outline h2{ font-family:var(--serif); font-weight:400; font-size:19px; margin:0; }
+  #outline .ol-head{ display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+  #outline .ol-head .spacer{ flex:1; }
+  #outline .ol-stats{ font-size:12px; color:var(--muted); margin-bottom:12px; }
+  .ol-row{ border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin-bottom:8px; background:#12101a; }
+  .ol-row.planned{ border-style:dashed; }
+  .ol-row.short{ border-color:#e0a86b88; }
+  .ol-row .ol-top{ display:flex; align-items:center; gap:8px; font-size:13px; }
+  .ol-row .ol-num{ color:var(--gold); font-family:var(--serif); min-width:22px; }
+  .ol-row .ol-title{ flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ol-row .ol-title:hover{ color:var(--gold); }
+  .ol-row select{ width:auto; padding:2px 4px; font-size:11.5px; }
+  .ol-row .ol-brief{ font-size:11.5px; color:var(--muted); margin-top:5px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .ol-row .ol-bar{ height:4px; background:var(--border); border-radius:2px; margin-top:6px; overflow:hidden; }
+  .ol-row .ol-bar span{ display:block; height:100%; background:var(--accent); }
+  .ol-row.short .ol-bar span{ background:#e0a86b; }
+  .ol-row .ol-words{ font-size:11px; color:var(--muted); margin-top:3px; }
+  .ol-row .mini-actions{ margin-top:5px; }
 </style>
 </head>
 <body>
@@ -429,7 +459,9 @@
     </div>
     <div class="stats" id="wordStats">0 palavras</div>
     <div class="stats" id="ctxMeter"></div>
+    <button class="icon" id="outlineBtn" onclick="toggleOutline()" style="display:none;" title="Índice de capítulos">☷ Capítulos</button>
   </div>
+  <div id="outline"></div>
 
   <div id="log"></div>
 
@@ -443,6 +475,7 @@
       <button class="secondary" onclick="downloadJSON()">Backup .json</button>
       <button class="secondary" onclick="copyStory()">Copiar tudo</button>
       <button class="secondary" id="stopBtn" onclick="stopGeneration()" style="display:none; border-color:var(--accent); color:var(--accent);">Parar</button>
+      <button class="secondary" id="planBtn" onclick="planChapter()" style="display:none;" title="Guardar esta indicação como capítulo planeado, sem gerar">Planear</button>
       <button class="primary" id="sendBtn" onclick="send()">Gerar</button>
     </div>
   </div>
@@ -457,6 +490,7 @@ let editingIndex = null;
 let revisingEntry = null;    // entry whose "rever" box is open
 let versionsOpenEntry = null; // entry whose version list is open
 let lastSelection = null;    // {entry, start, end} — last text selection inside a chapter
+let genUserEntry = null;     // brief whose chapter is being generated right now
 let generating = false;      // only one generation may run at a time
 let genChatId = null;        // chat the running generation belongs to
 let genProgress = null;      // {baseWords, floor, text} for the live word counter
@@ -472,6 +506,9 @@ function toggleKeyVisibility(id, checkbox){
 }
 
 function applyModeUI(m){
+  $('outlineBtn').style.display = m === 'author' ? '' : 'none';
+  $('planBtn').style.display = m === 'author' ? '' : 'none';
+  if(m !== 'author') $('outline').classList.remove('open');
   $('mode-chat').classList.toggle('active', m==='chat');
   $('mode-author').classList.toggle('active', m==='author');
   $('input').placeholder = m === 'chat'
@@ -535,13 +572,24 @@ function renderEntry(entry, idx){
   if(!entry) return;
   const log = $('log');
 
+  let divider = null;
   if(entry.role === 'assistant' && mode === 'author'){
     chapterCount++;
-    const div = document.createElement('div');
-    div.className = 'chapter-divider';
-    div.textContent = 'Capítulo ' + chapterCount;
-    log.appendChild(div);
+    divider = document.createElement('div');
+    divider.className = 'chapter-divider';
+    const t = document.createElement('span');
+    t.className = 'ch-title';
+    t.title = 'Mudar o título';
+    t.textContent = 'Capítulo ' + chapterCount + (entry.title ? ' · ' + entry.title : '');
+    t.onclick = () => renameChapter(entry);
+    const st = document.createElement('span');
+    const status = entry.status || 'rascunho';
+    st.className = 'ch-status ' + status;
+    st.textContent = status;
+    divider.append(t, st);
+    log.appendChild(divider);
   }
+  const planned = mode === 'author' && isPlanned(idx);
 
   const wrap = document.createElement('div');
   wrap.className = 'entry ' + entry.role;
@@ -550,7 +598,7 @@ function renderEntry(entry, idx){
   meta.className = 'meta';
   let metaNode = null;
   if(entry.role === 'user'){
-    meta.textContent = mode === 'author' ? 'Indicação' : 'Tu';
+    meta.textContent = mode === 'author' ? (planned ? 'Indicação · capítulo planeado' : 'Indicação') : 'Tu';
   } else {
     // provider/finishReason come from config, API responses and imported
     // backups — never feed them to innerHTML.
@@ -596,12 +644,12 @@ function renderEntry(entry, idx){
   bubble.className = 'bubble';
   bubble.textContent = entry.content;
   wrap.appendChild(bubble);
-  const els = {bubble, metaText: metaNode, pendingText: null};
+  const els = {bubble, metaText: metaNode, pendingText: null, wrap, divider};
   entryEls.set(entry, els);
   if(entry.role === 'assistant'){
     // Remember a selection made in this chapter, for "rever" on just that passage.
     const capture = () => {
-      const off = selectionOffsets(bubble);
+      const off = selectionOffsets(bubble, true);
       if(off) lastSelection = {entry, ...off};
       else if(lastSelection && lastSelection.entry === entry) lastSelection = null;
       if(revisingEntry === entry) updateReviseScope(entry);
@@ -617,6 +665,19 @@ function renderEntry(entry, idx){
   editBtn.textContent = 'editar';
   editBtn.onclick = () => startEdit(idx);
   actions.appendChild(editBtn);
+  if(planned){
+    const genBtn = document.createElement('button');
+    genBtn.textContent = 'gerar este capítulo';
+    genBtn.onclick = () => generatePlanned(entry);
+    actions.appendChild(genBtn);
+  }
+  if(entry.role === 'assistant' && mode === 'author'){
+    const splitBtn = document.createElement('button');
+    splitBtn.textContent = 'dividir';
+    splitBtn.title = 'Dividir o capítulo em dois, no ponto onde está o cursor (clica no texto primeiro)';
+    splitBtn.onclick = () => splitChapter(entry);
+    actions.appendChild(splitBtn);
+  }
   if(entry.role === 'assistant'){
     const regenBtn = document.createElement('button');
     regenBtn.textContent = 'regenerar';
@@ -1026,6 +1087,9 @@ function buildContext(hist){
   const summary = $('storySummary').value.trim();
   const limit = parseInt($('contextWords').value, 10) || 0;
 
+  // Planned (not yet written) chapters must not leak into the request: drop
+  // briefs that have no reply, except the final one being generated now.
+  hist = hist.filter((h, i) => !(h.role === 'user' && i < hist.length - 1 && hist[i + 1].role === 'user'));
   let kept = hist;
   if(limit > 0){
     kept = [];
@@ -1580,13 +1644,26 @@ async function send(){
   const text = inputEl.value.trim();
   if(!text) return;
   if(!beginGeneration()) return;
-  const chatId = genChatId;
-  const letter = $('activeProvider').value;
-
   const userEntry = {role:'user', content:text};
   history.push(userEntry);
   rerenderAll();
   inputEl.value = '';
+  await runChapterGeneration(genChatId, userEntry, {fromComposer: true});
+}
+
+// Generates the chapter for a planned brief, in place (later chapters untouched).
+async function generatePlanned(userEntry){
+  if(history.indexOf(userEntry) === -1) return;
+  if(!beginGeneration()) return;
+  await runChapterGeneration(genChatId, userEntry, {fromComposer: false});
+}
+
+// Writes the chapter answering `userEntry`, inserted right after it. Must be
+// called after beginGeneration(); always ends the generation.
+async function runChapterGeneration(chatId, userEntry, {fromComposer}){
+  const letter = $('activeProvider').value;
+  const inputEl = $('input');
+  genUserEntry = userEntry;
 
   let assistantEntry = null;
   const ensureEntry = (providerLabel) => {
@@ -1594,7 +1671,9 @@ async function send(){
     if(!hist) return null;
     if(!assistantEntry){
       assistantEntry = {role:'assistant', content:'', provider: providerLabel, words: 0};
-      hist.push(assistantEntry);
+      const at = hist.indexOf(userEntry);
+      if(at === -1) hist.push(assistantEntry);
+      else hist.splice(at + 1, 0, assistantEntry);
     }
     return assistantEntry;
   };
@@ -1618,12 +1697,18 @@ async function send(){
 
   let finalMsg = '', finalIsError = false, summarizeAfter = false;
   try{
-    const messages = buildMessages(null);
+    const idx = history.indexOf(userEntry);
+    const messages = buildMessages(null, history.slice(0, idx + 1));
     const {floorNote, failoverNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream});
     const where = chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}".`;
-    finalMsg = [where, failoverNote, floorNote].join(' ').trim();
+    const hist = historyOf(chatId) || [];
+    const isLast = [...hist].reverse().find(h => h.role === 'assistant') === assistantEntry;
+    const midStory = isLast ? '' : 'Capítulo gerado a meio da história — o resumo pode precisar de "refazer do zero".';
+    finalMsg = [where, failoverNote, floorNote, midStory].join(' ').trim();
     finalIsError = !!(floorNote || failoverNote);
-    summarizeAfter = $('autoSummary').checked && !!chats[chatId] && chats[chatId].mode === 'author';
+    // The running summary folds chapters in order, so only auto-update it
+    // when this is the newest chapter.
+    summarizeAfter = isLast && $('autoSummary').checked && !!chats[chatId] && chats[chatId].mode === 'author';
   }catch(err){
     const aborted = err.name === 'AbortError';
     if(assistantEntry && assistantEntry.content.trim()){
@@ -1633,21 +1718,24 @@ async function send(){
       commitChat(chatId);
       finalMsg = `${aborted ? 'geração interrompida' : err.message} — ${assistantEntry.words} palavras já recebidas foram guardadas.`;
     } else {
-      // Nothing was generated: take the brief back out of the history (so a
-      // retry doesn't send it twice) and give it back to the composer.
       const hist = historyOf(chatId);
-      if(hist){
-        if(assistantEntry){ const a = hist.indexOf(assistantEntry); if(a !== -1) hist.splice(a, 1); }
-        const at = hist.indexOf(userEntry);
+      if(hist && assistantEntry){ const a = hist.indexOf(assistantEntry); if(a !== -1) hist.splice(a, 1); }
+      if(fromComposer){
+        // Nothing was generated: take the brief back out of the history (so a
+        // retry doesn't send it twice) and give it back to the composer.
+        const at = hist ? hist.indexOf(userEntry) : -1;
         if(at !== -1) hist.splice(at, 1);
-        commitChat(chatId);
+        if(chatId === currentChatId && !inputEl.value.trim()) inputEl.value = userEntry.content;
       }
-      if(chatId === currentChatId && !inputEl.value.trim()) inputEl.value = text;
+      // A planned brief simply stays planned.
+      if(hist) commitChat(chatId);
       finalMsg = aborted ? 'geração interrompida.' : err.message;
     }
     finalIsError = !aborted;
   }finally{
+    genUserEntry = null;
     endGeneration();
+    if(chatId === currentChatId) rerenderAllNoSave();
   }
   setStatus(finalMsg, finalIsError);
   if(summarizeAfter){
@@ -1655,6 +1743,241 @@ async function send(){
     if(err) finalMsg = (finalMsg + ' Resumo não atualizado: ' + err).trim();
     setStatus(finalMsg, finalIsError || !!err);
   }
+}
+
+/* ---------------- chapters: titles, status, plan, outline ---------------- */
+
+const CHAPTER_STATUSES = ['rascunho', 'revisto', 'final'];
+
+// A brief with no chapter after it (and not being generated right now).
+function isPlanned(idx){
+  const h = history[idx];
+  if(!h || h.role !== 'user') return false;
+  if(generating && genUserEntry === h) return false;
+  const next = history[idx + 1];
+  return !next || next.role !== 'assistant';
+}
+
+function planChapter(){
+  const text = $('input').value.trim();
+  if(!text) return;
+  history.push({role: 'user', content: text});
+  $('input').value = '';
+  rerenderAll();
+  renderOutline();
+  setStatus('capítulo planeado — gera-o quando quiseres (no índice ou em "gerar este capítulo").');
+}
+
+function renameChapter(entry){
+  const t = prompt('Título do capítulo (vazio = sem título):', entry.title || '');
+  if(t === null) return;
+  entry.title = t.trim().slice(0, 120);
+  rerenderAll();
+  renderOutline();
+}
+
+// Story as units: a brief plus the chapter(s) that answer it, or a run of
+// chapters without a brief. Reordering/merging works on whole units.
+function storyUnits(){
+  const units = [];
+  let i = 0;
+  while(i < history.length){
+    let j = i + 1;
+    while(j < history.length && history[j].role === 'assistant') j++;
+    const entries = history.slice(i, j);
+    units.push({
+      start: i, end: j,
+      brief: entries[0].role === 'user' ? entries[0] : null,
+      chapters: entries.filter(e => e.role === 'assistant')
+    });
+    i = j;
+  }
+  return units;
+}
+
+function chapterEditBlocked(){
+  if(generating){ setStatus('espera que a geração acabe (ou carrega em "Parar") antes de reorganizar capítulos.', true); return true; }
+  return false;
+}
+
+function staleSummaryNote(){
+  const chat = chats[currentChatId];
+  return chat && (chat.summaryCovered || 0) > 0 ? ' O resumo pode precisar de "refazer do zero".' : '';
+}
+
+function moveUnit(k, dir){
+  if(chapterEditBlocked()) return;
+  const units = storyUnits();
+  const a = units[k], b = units[k + dir];
+  if(!a || !b) return;
+  const first = dir < 0 ? b : a, second = dir < 0 ? a : b;
+  const moved = history.slice(second.start, second.end).concat(history.slice(first.start, first.end));
+  history.splice(first.start, second.end - first.start, ...moved); // in place: chats[] keeps the same array
+  rerenderAll();
+  renderOutline();
+  setStatus('ordem alterada.' + staleSummaryNote());
+}
+
+function mergeWithNext(k){
+  if(chapterEditBlocked()) return;
+  const units = storyUnits();
+  const a = units[k], b = units[k + 1];
+  if(!a || !b || !a.chapters.length || !b.chapters.length) return;
+  if(!confirm('Juntar este capítulo com o seguinte num só? (a versão atual fica em "versões")')) return;
+  const target = a.chapters[0];
+  target.versions = pushVersion(target.versions, target, 'antes de juntar');
+  const parts = a.chapters.concat(b.chapters).map(c => c.content.trim());
+  target.content = parts.join('\n\n');
+  target.words = wordCount(target.content);
+  if(!target.title && b.chapters[0].title) target.title = b.chapters[0].title;
+  if(a.brief && b.brief) a.brief.content = a.brief.content.trim() + '\n\n' + b.brief.content.trim();
+  const brief = a.brief || b.brief;
+  history.splice(a.start, b.end - a.start, ...[brief, target].filter(Boolean));
+  rerenderAll();
+  renderOutline();
+  setStatus('capítulos juntos.' + staleSummaryNote());
+}
+
+function splitChapter(entry){
+  if(chapterEditBlocked()) return;
+  if(!lastSelection || lastSelection.entry !== entry){
+    setStatus('clica no texto do capítulo onde queres dividir e depois em "dividir".', true);
+    return;
+  }
+  // Split at the start of the selection/cursor, moved back to a line start
+  // when it is close to one, so paragraphs are not cut in half.
+  let at = lastSelection.start;
+  const lineStart = entry.content.lastIndexOf('\n', at - 1) + 1;
+  if(at - lineStart < 40) at = lineStart;
+  const before = entry.content.slice(0, at).trimEnd();
+  const after = entry.content.slice(at).trimStart();
+  if(!before || !after){ setStatus('o ponto de divisão tem de ficar a meio do capítulo.', true); return; }
+  if(!confirm(`Dividir aqui? Fica com ${wordCount(before)} + ${wordCount(after)} palavras.`)) return;
+  entry.versions = pushVersion(entry.versions, entry, 'antes de dividir');
+  entry.content = before;
+  entry.words = wordCount(before);
+  const idx = history.indexOf(entry);
+  const brief = {role: 'user', content: '(continuação do capítulo anterior)'};
+  const second = {role: 'assistant', content: after, provider: entry.provider, words: wordCount(after),
+                  finishReason: entry.finishReason, status: entry.status || 'rascunho'};
+  history.splice(idx + 1, 0, brief, second);
+  lastSelection = null;
+  rerenderAll();
+  renderOutline();
+  setStatus('capítulo dividido em dois.' + staleSummaryNote());
+}
+
+function toggleOutline(){
+  $('outline').classList.toggle('open');
+  renderOutline();
+}
+
+function jumpTo(entry){
+  const els = entryEls.get(entry);
+  const target = els && (els.divider || els.wrap);
+  if(target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+  if(window.innerWidth < 800) $('outline').classList.remove('open');
+}
+
+function renderOutline(){
+  const box = $('outline');
+  if(!box.classList.contains('open')) return;
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'ol-head';
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Capítulos';
+  const sp = document.createElement('span'); sp.className = 'spacer';
+  const close = document.createElement('button');
+  close.className = 'icon'; close.textContent = '×';
+  close.style.cssText = 'background:none;border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:4px 9px;cursor:pointer;';
+  close.onclick = toggleOutline;
+  head.append(h2, sp, close);
+  box.appendChild(head);
+
+  const units = storyUnits();
+  const written = units.flatMap(u => u.chapters);
+  const total = written.reduce((s, c) => s + (c.words || 0), 0);
+  const avg = written.length ? Math.round(total / written.length) : 0;
+  const max = Math.max(1, ...written.map(c => c.words || 0));
+  const plannedCount = units.filter(u => u.brief && !u.chapters.length).length;
+  const stats = document.createElement('div');
+  stats.className = 'ol-stats';
+  stats.textContent = `${written.length} capítulos · ${total.toLocaleString('pt-PT')} palavras · média ${avg.toLocaleString('pt-PT')}` +
+    (plannedCount ? ` · ${plannedCount} planeados` : '');
+  box.appendChild(stats);
+  if(!units.length){
+    const empty = document.createElement('div');
+    empty.className = 'hint';
+    empty.textContent = 'Ainda não há capítulos. Escreve uma indicação e carrega em "Gerar", ou em "Planear" para a guardar para depois.';
+    box.appendChild(empty);
+    return;
+  }
+
+  let n = 0;
+  units.forEach((u, k) => {
+    const row = document.createElement('div');
+    const isPlan = !u.chapters.length;
+    const words = u.chapters.reduce((s, c) => s + (c.words || 0), 0);
+    // Flag chapters well under the story's average — the "sagging" ones.
+    const short = !isPlan && written.length >= 3 && words < avg * 0.6;
+    row.className = 'ol-row' + (isPlan ? ' planned' : '') + (short ? ' short' : '');
+    const top = document.createElement('div');
+    top.className = 'ol-top';
+    const num = document.createElement('span');
+    num.className = 'ol-num';
+    const main = u.chapters[0];
+    if(!isPlan){ n++; num.textContent = u.chapters.length > 1 ? `${n}–${n + u.chapters.length - 1}` : String(n); n += u.chapters.length - 1; }
+    else num.textContent = '·';
+    const title = document.createElement('span');
+    title.className = 'ol-title';
+    title.textContent = isPlan ? 'planeado' : (main.title || '(sem título)');
+    title.title = isPlan ? 'ir para a indicação' : 'ir para o capítulo';
+    title.onclick = () => jumpTo(main || u.brief);
+    top.append(num, title);
+    if(!isPlan){
+      const sel = document.createElement('select');
+      CHAPTER_STATUSES.forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+      sel.value = main.status || 'rascunho';
+      sel.onchange = () => { u.chapters.forEach(c => c.status = sel.value); rerenderAll(); renderOutline(); };
+      top.appendChild(sel);
+    }
+    row.appendChild(top);
+    if(u.brief){
+      const brief = document.createElement('div');
+      brief.className = 'ol-brief';
+      brief.textContent = u.brief.content;
+      row.appendChild(brief);
+    }
+    if(!isPlan){
+      const bar = document.createElement('div');
+      bar.className = 'ol-bar';
+      const fill = document.createElement('span');
+      fill.style.width = Math.round(words / max * 100) + '%';
+      bar.appendChild(fill);
+      const w = document.createElement('div');
+      w.className = 'ol-words';
+      w.textContent = `${words.toLocaleString('pt-PT')} palavras` + (short ? ' — bem abaixo da média' : '');
+      row.append(bar, w);
+    }
+    const acts = document.createElement('div');
+    acts.className = 'mini-actions';
+    const btn = (label, fn, disabled) => {
+      const b = document.createElement('button');
+      b.textContent = label; b.onclick = fn; b.disabled = !!disabled;
+      acts.appendChild(b);
+    };
+    btn('↑', () => moveUnit(k, -1), k === 0);
+    btn('↓', () => moveUnit(k, 1), k === units.length - 1);
+    if(isPlan) btn('gerar', () => generatePlanned(u.brief));
+    else{
+      btn('título', () => renameChapter(main));
+      const next = units[k + 1];
+      if(next && next.chapters.length) btn('juntar com o seguinte', () => mergeWithNext(k));
+    }
+    row.appendChild(acts);
+    box.appendChild(row);
+  });
 }
 
 async function manualContinue(){
@@ -1734,9 +2057,9 @@ function sanitizeVersions(list){
 
 // Character offsets of the current selection inside `container` (whose text
 // is exactly entry.content), or null.
-function selectionOffsets(container){
+function selectionOffsets(container, allowCollapsed){
   const sel = window.getSelection();
-  if(!sel || !sel.rangeCount || sel.isCollapsed) return null;
+  if(!sel || !sel.rangeCount || (sel.isCollapsed && !allowCollapsed)) return null;
   const r = sel.getRangeAt(0);
   if(!container.contains(r.startContainer) || !container.contains(r.endContainer)) return null;
   const pre = document.createRange();
@@ -1744,7 +2067,7 @@ function selectionOffsets(container){
   pre.setEnd(r.startContainer, r.startOffset);
   const start = pre.toString().length;
   const end = start + r.toString().length;
-  return end > start ? {start, end} : null;
+  return end > start || allowCollapsed ? {start, end} : null;
 }
 
 function selectionFor(entry){
@@ -2088,6 +2411,7 @@ function rerenderAllNoSave(){
   $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
   updateSummaryInfo();
   updateMeter();
+  renderOutline();
 }
 
 function rerenderAll(){
@@ -2427,7 +2751,7 @@ function compileStory(){
     if(h.role === 'assistant'){
       if(mode === 'author'){
         ch++;
-        out += `\n\n--- Capítulo ${ch} ---\n\n`;
+        out += `\n\n--- Capítulo ${ch}${h.title ? ': ' + h.title : ''} ---\n\n`;
       }
       out += h.content + '\n';
     }
@@ -2490,7 +2814,9 @@ $('importInput').addEventListener('change', async (e) => {
         ? {role: 'user', content: h.content}
         : {role: 'assistant', content: h.content, provider: String(h.provider || 'importado'),
            words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {}),
-           ...(Array.isArray(h.versions) ? {versions: sanitizeVersions(h.versions)} : {})});
+           ...(Array.isArray(h.versions) ? {versions: sanitizeVersions(h.versions)} : {}),
+           ...(typeof h.title === 'string' && h.title ? {title: h.title.slice(0, 120)} : {}),
+           ...(CHAPTER_STATUSES.includes(h.status) ? {status: h.status} : {})});
     if(!imported.length) throw new Error('não contém entradas válidas.');
     saveHistory();
     const id = 'chat_' + Date.now();

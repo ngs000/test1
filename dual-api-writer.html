@@ -261,6 +261,14 @@
   .var-nav button:hover:not(:disabled){ color:var(--text); border-color:var(--accent); }
   .var-nav button:disabled{ opacity:0.35; cursor:default; }
   .var-nav .var-pos{ font-size:11px; color:var(--gold); padding:0 4px; }
+  .beats{ margin-top:8px; border:1px solid #8fb3e066; border-radius:8px; padding:8px 10px; background:#12101a; }
+  .beats .rev-head{ font-size:11.5px; color:#8fb3e0; margin-bottom:6px; }
+  .beats textarea{ min-height:150px; font-size:12.5px; line-height:1.5; resize:vertical; }
+  /* With more controls, let bars wrap as rows instead of squeezing labels onto two lines. */
+  #topbar{ flex-wrap:wrap; row-gap:8px; }
+  #topbar button, .mode-toggle button, #composer .bar button{ white-space:nowrap; }
+  #composer .bar{ flex-wrap:wrap; row-gap:8px; }
+  #composer .bar #sendBtn{ margin-left:auto; }
 </style>
 </head>
 <body>
@@ -398,6 +406,27 @@
       <label style="margin:0;">failover: se o provider escolhido falhar (depois das novas tentativas), usar o outro</label>
     </div>
     <p class="hint" id="failoverHint"></p>
+    <label>modo de escrita (Modo Autor)</label>
+    <select id="writeMode">
+      <option value="direct">direto — o modelo escreve logo o capítulo</option>
+      <option value="pipeline">plano → prosa — primeiro um plano de cenas, depois a prosa</option>
+    </select>
+    <div id="pipelineOptions">
+      <label>plano escrito por</label>
+      <select id="plannerProvider">
+        <option value="other">o outro provider</option>
+        <option value="same">o provider escolhido</option>
+      </select>
+      <div class="checkline">
+        <input type="checkbox" id="reviewBeats" checked>
+        <label style="margin:0;">parar para eu rever o plano antes de escrever a prosa</label>
+      </div>
+    </div>
+    <p class="hint">Com um plano de cenas (beats), o capítulo segue uma estrutura definida antes de escrever — ajuda capítulos longos a não se perderem nem encherem chouriços. O plano fica na indicação e é usado também em regenerar, variantes e continuar.</p>
+    <div class="checkline">
+      <input type="checkbox" id="alternateRounds">
+      <label style="margin:0;">alternar providers entre continuações (quebra repetições em capítulos longos)</label>
+    </div>
     <div class="checkline">
       <input type="checkbox" id="streaming" checked>
       <label style="margin:0;">streaming (mostra o texto a chegar; "Parar" guarda o que já chegou)</label>
@@ -673,9 +702,16 @@ function renderEntry(entry, idx){
   actions.appendChild(editBtn);
   if(planned){
     const genBtn = document.createElement('button');
-    genBtn.textContent = 'gerar este capítulo';
+    genBtn.textContent = entry.beats ? 'escrever capítulo com este plano' : 'gerar este capítulo';
     genBtn.onclick = () => generatePlanned(entry);
     actions.appendChild(genBtn);
+  }
+  if(entry.role === 'user' && mode === 'author' && !entry.beats){
+    const planBtn = document.createElement('button');
+    planBtn.textContent = 'criar plano';
+    planBtn.title = 'Pedir um plano de cenas (beats) para este capítulo, que podes editar antes da prosa';
+    planBtn.onclick = () => planOnly(entry);
+    actions.appendChild(planBtn);
   }
   if(entry.role === 'assistant' && mode === 'author'){
     const splitBtn = document.createElement('button');
@@ -734,6 +770,7 @@ function renderEntry(entry, idx){
   delBtn.onclick = () => deleteEntry(idx);
   actions.appendChild(delBtn);
   wrap.appendChild(actions);
+  if(entry.role === 'user' && mode === 'author' && entry.beats) wrap.appendChild(beatsPanel(entry));
   if(entry.role === 'assistant'){
     if(revisingEntry === entry) wrap.appendChild(reviseBox(entry));
     if(entry.pending) wrap.appendChild(revisionPanel(entry, els));
@@ -1158,10 +1195,14 @@ function buildContext(hist){
     messages.push({role:'user', content:'[Earlier parts of the story are omitted here — see "Story so far" in the system message.]'});
   }
   let historyWords = 0;
-  for(const h of kept){
-    messages.push({role: h.role, content: h.content});
-    historyWords += entryWords(h);
-  }
+  kept.forEach((h, i) => {
+    // The beat outline travels with the brief it belongs to, only when that
+    // brief is the one being answered now.
+    const withBeats = i === kept.length - 1 && h.role === 'user' && h.beats;
+    const content = withBeats ? h.content + BEATS_INJECTION + h.beats : h.content;
+    messages.push({role: h.role, content});
+    historyWords += withBeats ? wordCount(content) : entryWords(h);
+  });
   return {
     messages,
     stats: {
@@ -1597,6 +1638,10 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
       full = full.slice(0, full.length - (content.length - strippedContent.length));
     }
     if(onProgress) onProgress(full, labelNow(), 'parcial');
+    if($('alternateRounds').checked && providerReady(otherProvider(letter))){
+      // A fresh model voice for the next stretch breaks repetition loops.
+      letter = otherProvider(letter);
+    }
     messages = messages.concat([
       {role:'assistant', content: strippedContent},
       {role:'user', content: continuePrompt}
@@ -1677,6 +1722,10 @@ async function send(){
   history.push(userEntry);
   rerenderAll();
   inputEl.value = '';
+  if(pipelineOn()){
+    const proceed = await planStep(genChatId, userEntry, {fromComposer: true});
+    if(!proceed) return;
+  }
   await runChapterGeneration(genChatId, userEntry, {fromComposer: true});
 }
 
@@ -1684,7 +1733,130 @@ async function send(){
 async function generatePlanned(userEntry){
   if(history.indexOf(userEntry) === -1) return;
   if(!beginGeneration()) return;
+  if(pipelineOn() && !userEntry.beats){
+    const proceed = await planStep(genChatId, userEntry, {fromComposer: false});
+    if(!proceed) return;
+  }
   await runChapterGeneration(genChatId, userEntry, {fromComposer: false});
+}
+
+/* ---------------- outline → prose pipeline ---------------- */
+
+const BEATS_INJECTION = '\n\nBEAT OUTLINE for this chapter — follow it in order and cover every beat, expanding each into full scenes (action, dialogue, interiority). Do not print the outline itself:\n';
+
+function pipelineOn(){
+  return mode === 'author' && $('writeMode').value === 'pipeline';
+}
+
+function beatsPrompt(){
+  const floor = parseInt($('wordFloor').value, 10) || 0;
+  return '\n\n---\nDo NOT write the chapter yet. First plan it: write a numbered beat outline for the chapter requested above, usually 8–16 beats. ' +
+    'For each beat give 1–3 lines: what happens, who is present, the emotional turn or reveal, and roughly how many words it deserves' +
+    (floor > 0 ? ` (the beats together must add up to at least ${floor} words)` : '') + '. ' +
+    'Respect the system instructions, the lore and continuity with the story so far. Output only the numbered list — no prose, no preamble.';
+}
+
+// Asks for the beat outline of `userEntry` and stores it on the brief.
+// Caller holds the generation lock. Returns a failover note ('' if none).
+async function planBeats(chatId, userEntry){
+  const idx = history.indexOf(userEntry);
+  const active = $('activeProvider').value;
+  const letter = $('plannerProvider').value === 'other' && providerReady(otherProvider(active)) ? otherProvider(active) : active;
+  // Plan from the brief alone (not from a previous outline).
+  const messages = buildMessages(null, history.slice(0, idx).concat([{role: 'user', content: userEntry.content}]));
+  messages[messages.length - 1] = {role: 'user', content: userEntry.content + beatsPrompt()};
+  startGenTimer(`a planear o capítulo com ${providerConfig(letter).label}...`);
+  const attempt = await withFailover(letter, l => callProvider(l, messages));
+  const beats = attempt.value.content.trim();
+  if(!beats) throw new Error('o modelo devolveu um plano vazio.');
+  userEntry.beats = beats;
+  userEntry.beatsBy = attempt.value.providerLabel;
+  commitChat(chatId);
+  return attempt.note;
+}
+
+// Plan step inside a chapter generation. Returns true when the prose should
+// follow now; otherwise it has already ended the generation.
+async function planStep(chatId, userEntry, {fromComposer}){
+  genUserEntry = userEntry;
+  try{
+    const note = await planBeats(chatId, userEntry);
+    if($('reviewBeats').checked){
+      genUserEntry = null;
+      endGeneration();
+      if(chatId === currentChatId) rerenderAllNoSave();
+      setStatus(('plano pronto — revê/edita-o e carrega em "escrever capítulo com este plano". ' + note).trim(), !!note);
+      return false;
+    }
+    if(note) setStatus(note, true);
+    return true;
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    if(fromComposer){
+      // Same as a failed chapter: give the brief back to the composer.
+      const hist = historyOf(chatId);
+      const at = hist ? hist.indexOf(userEntry) : -1;
+      if(at !== -1){ hist.splice(at, 1); commitChat(chatId); }
+      if(chatId === currentChatId && !$('input').value.trim()) $('input').value = userEntry.content;
+    }
+    genUserEntry = null;
+    endGeneration();
+    if(chatId === currentChatId) rerenderAllNoSave();
+    setStatus(aborted ? 'planeamento interrompido.' : 'plano: ' + err.message, !aborted);
+    return false;
+  }
+}
+
+// "criar plano" / "refazer plano" on a brief, without writing the chapter.
+async function planOnly(userEntry){
+  if(history.indexOf(userEntry) === -1) return;
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
+  genUserEntry = userEntry;
+  try{
+    const note = await planBeats(chatId, userEntry);
+    setStatus(('plano pronto. ' + note).trim(), !!note);
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    setStatus(aborted ? 'planeamento interrompido.' : 'plano: ' + err.message, !aborted);
+  }finally{
+    genUserEntry = null;
+    endGeneration();
+    if(chatId === currentChatId) rerenderAllNoSave();
+  }
+}
+
+function beatsPanel(entry){
+  const panel = document.createElement('div');
+  panel.className = 'beats';
+  const head = document.createElement('div');
+  head.className = 'rev-head';
+  head.textContent = `Plano de cenas${entry.beatsBy ? ' (por ' + entry.beatsBy + ')' : ''} — editável; é seguido ao escrever este capítulo`;
+  const ta = document.createElement('textarea');
+  ta.value = entry.beats;
+  ta.addEventListener('input', () => {
+    entry.beats = ta.value;
+    persistChats();
+    updateMeter();
+  });
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const redo = document.createElement('button');
+  redo.textContent = 'refazer plano';
+  redo.onclick = () => {
+    if(!confirm('Pedir um plano novo? O atual é substituído.')) return;
+    planOnly(entry);
+  };
+  const remove = document.createElement('button');
+  remove.textContent = 'remover plano';
+  remove.onclick = () => {
+    if(!confirm('Remover o plano desta indicação?')) return;
+    delete entry.beats; delete entry.beatsBy;
+    rerenderAll();
+  };
+  bar.append(redo, remove);
+  panel.append(head, ta, bar);
+  return panel;
 }
 
 // Writes the chapter answering `userEntry`, inserted right after it. Must be
@@ -2994,7 +3166,7 @@ $('importInput').addEventListener('change', async (e) => {
     const imported = rawHistory
       .filter(h => h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string')
       .map(h => h.role === 'user'
-        ? {role: 'user', content: h.content}
+        ? {role: 'user', content: h.content, ...(typeof h.beats === 'string' && h.beats.trim() ? {beats: h.beats, beatsBy: String(h.beatsBy || '')} : {})}
         : {role: 'assistant', content: h.content, provider: String(h.provider || 'importado'),
            words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {}),
            ...(Array.isArray(h.versions) ? {versions: sanitizeVersions(h.versions)} : {}),
@@ -3024,7 +3196,7 @@ $('importInput').addEventListener('change', async (e) => {
 
 // Global settings (providers, generation). The system prompt, summary and
 // lore selection are per story and live in the story itself.
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
 const KEY_IDS = ['pA-key', 'pB-key'];
 const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
 
@@ -3113,6 +3285,11 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
+function updatePipelineOptions(){
+  $('pipelineOptions').style.display = $('writeMode').value === 'pipeline' ? '' : 'none';
+}
+$('writeMode').addEventListener('change', updatePipelineOptions);
+
 // "variante com <outro>" buttons name the provider that is not selected.
 $('activeProvider').addEventListener('change', () => { if(chats[currentChatId]) rerenderAllNoSave(); });
 
@@ -3126,6 +3303,7 @@ $('input').addEventListener('keydown', (e)=>{
 const legacyConfig = loadConfig();
 updateFloorWarning();
 updateFailoverHint();
+updatePipelineOptions();
 window.appReady = loadAll(typeof legacyConfig.systemPrompt === 'string' ? legacyConfig.systemPrompt : '');
 </script>
 </body>

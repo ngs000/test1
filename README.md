@@ -44,6 +44,12 @@ Then, in the sidebar:
 - **☷ Capítulos** opens the outline: every chapter with title, status, brief and a word-count bar (chapters well below the average are flagged), plus jump, move up/down, rename, merge with the next one, and generate for planned chapters.
 - **dividir** splits a chapter in two at the cursor (click in the text first).
 
+**Outline → prose (Author mode)**
+- **modo de escrita: plano → prosa**: before writing, a model produces a numbered **beat outline** (8–16 beats sized to the word floor); the chapter is then written following it. The outline can be written by the other provider (e.g. a fast/cheap model plans, the strong one writes).
+- With **parar para rever o plano**, the outline appears under the brief as editable text; **escrever capítulo com este plano** writes the prose. **criar plano** / **refazer plano** / **remover plano** work on any brief, also in direct mode.
+- The outline stays with its brief and is also used by regenerar, variantes and Continuar; it is never sent with other chapters.
+- **alternar providers entre continuações**: continuation rounds alternate between the two APIs, to break repetition loops in very long chapters.
+
 **Variants**
 - **nova variante** writes another version of a chapter from the same brief and context; **variante com <other provider>** does it with the other API, to compare them. Flip with **‹ 2/3 ›** next to the word count.
 - The shown variant *is* the chapter (context, export, summary). Edits, revisions and "Continuar" apply to the shown variant and are kept when you flip.
@@ -84,7 +90,7 @@ Implemented from the audit: all listed bugs (B1–B21), the context manager (F1)
 1. ~~Revision workflow (F5)~~ — done.
 2. ~~First-class chapters (F7)~~ — done.
 3. ~~Variants / swipes (F13)~~ — done (including "variant with the other provider" for comparing).
-4. **More dual-API modes (rest of F4)** — outline → prose pipeline, alternating providers between continuation rounds.
+4. ~~More dual-API modes (rest of F4)~~ — done: outline → prose pipeline, alternating providers between continuation rounds (compare mode is covered by variants).
 5. **Prose tooling (F9)** — banned-phrase list with highlighter, repetition detector, POV/tense reminders.
 6. **Continuity tracker (F8)** — character sheets injected when a character is mentioned, timeline.
 7. **Exports (F11)** — Markdown with headings, EPUB, DOCX.

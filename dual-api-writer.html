@@ -238,6 +238,34 @@
     box-shadow:-10px 0 30px #0006; display:none;
   }
   #outline.open{ display:block; }
+  #continuity{
+    position:fixed; top:0; right:0; bottom:0; width:min(480px, 100%); z-index:31;
+    background:var(--panel); border-left:1px solid var(--border); overflow-y:auto; padding:16px 16px 30px;
+    box-shadow:-10px 0 30px #0006; display:none;
+  }
+  #continuity.open{ display:block; }
+  #continuity h2{ font-family:var(--serif); font-weight:400; font-size:19px; margin:0; }
+  #continuity .ol-head{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  #continuity .ol-head .spacer{ flex:1; }
+  .ct-tabs{ display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; margin-bottom:12px; width:max-content; }
+  .ct-tabs button{ background:var(--panel); color:var(--muted); border:none; padding:6px 14px; font-size:12.5px; cursor:pointer; }
+  .ct-tabs button.active{ background:var(--accent-soft); color:var(--text); }
+  .char-card{ border:1px solid var(--border); border-radius:6px; padding:8px 10px; margin-bottom:8px; background:#12101a; }
+  .char-card .ct-top{ display:flex; align-items:center; gap:8px; }
+  .char-card .ct-name{ flex:1; font-family:var(--serif); font-size:15px; cursor:pointer; }
+  .char-card .ct-name:hover{ color:var(--gold); }
+  .ct-sub{ font-size:11px; color:var(--muted); }
+  .char-card label{ margin:8px 0 3px; }
+  .char-card textarea{ min-height:44px; resize:vertical; font-size:12.5px; }
+  .tl-row{ display:flex; gap:6px; align-items:flex-start; margin-bottom:6px; }
+  .tl-row input{ width:130px; flex:none; font-size:12px; }
+  .tl-row textarea{ flex:1; min-height:34px; resize:vertical; font-size:12.5px; }
+  .tl-row .mini-actions{ margin-top:4px; flex-direction:column; gap:4px; }
+  .continuity-box{ margin-top:10px; border:1px solid #8fc9b066; border-radius:8px; padding:10px 12px; background:#12101a; font-size:12.5px; line-height:1.55; }
+  .continuity-box .rev-head{ font-size:11.5px; color:#8fc9b0; margin-bottom:6px; }
+  .continuity-box .ct-result{ white-space:pre-wrap; color:var(--text); }
+  .continuity-box .ct-item{ display:flex; gap:6px; align-items:flex-start; margin:3px 0; }
+  .continuity-box .ct-item input{ width:auto; margin-top:3px; }
   #outline h2{ font-family:var(--serif); font-weight:400; font-size:19px; margin:0; }
   #outline .ol-head{ display:flex; align-items:center; gap:10px; margin-bottom:4px; }
   #outline .ol-head .spacer{ flex:1; }
@@ -538,8 +566,10 @@
     <div class="stats" id="wordStats">0 palavras</div>
     <div class="stats" id="ctxMeter"></div>
     <button class="icon" id="outlineBtn" onclick="toggleOutline()" style="display:none;" title="Índice de capítulos">☷ Capítulos</button>
+    <button class="icon" id="continuityBtn" onclick="toggleContinuity()" title="Fichas de personagens e cronologia desta história">☺ Continuidade</button>
   </div>
   <div id="outline"></div>
+  <div id="continuity"></div>
 
   <div id="log"></div>
 
@@ -570,6 +600,10 @@ let versionsOpenEntry = null; // entry whose version list is open
 let lastSelection = null;    // {entry, start, end} — last text selection inside a chapter
 let genUserEntry = null;     // brief whose chapter is being generated right now
 let analysisOpenEntry = null; // chapter whose prose analysis is open
+let continuityOpenEntry = null; // chapter whose continuity box is open
+const continuityResults = new WeakMap(); // entry -> {check?: string, proposal?: {...}} (not persisted)
+let continuityTab = 'characters';
+let openCharId = null;
 let generating = false;      // only one generation may run at a time
 let genChatId = null;        // chat the running generation belongs to
 let genProgress = null;      // {baseWords, floor, text} for the live word counter
@@ -799,6 +833,11 @@ function renderEntry(entry, idx){
       delVar.onclick = () => deleteVariant(entry);
       actions.appendChild(delVar);
     }
+    const ctBtn = document.createElement('button');
+    ctBtn.textContent = 'continuidade';
+    ctBtn.title = 'Verificar contradições com as fichas/cronologia, ou atualizá-las com este capítulo';
+    ctBtn.onclick = () => { continuityOpenEntry = continuityOpenEntry === entry ? null : entry; rerenderAllNoSave(); };
+    actions.appendChild(ctBtn);
     const anBtn = document.createElement('button');
     anBtn.textContent = 'análise';
     anBtn.title = 'Frases proibidas, repetições, travessões e reticências neste capítulo';
@@ -836,6 +875,7 @@ function renderEntry(entry, idx){
     if(entry.pending) wrap.appendChild(revisionPanel(entry, els));
     if(versionsOpenEntry === entry && entry.versions && entry.versions.length) wrap.appendChild(versionsPanel(entry));
     if(analysisOpenEntry === entry) wrap.appendChild(analysisPanel(entry));
+    if(continuityOpenEntry === entry) wrap.appendChild(continuityBox(entry));
   }
 
   log.appendChild(wrap);
@@ -1242,6 +1282,9 @@ function buildContext(hist){
     summary
   ].join('\n');
   const loreHits = selectLore(scanText, chat);
+  const charHits = selectCharacters(scanText, chat);
+  const charText = charHits.map(characterSheetText).join('\n\n');
+  const timelineText = chat.sendTimeline ? timelineAsText(chat.timeline || []) : '';
   const loreText = loreHits.map(b => `### ${b.title}\n${b.content}`).join('\n\n');
   const useSummary = !!summary && omitted > 0;
 
@@ -1250,6 +1293,8 @@ function buildContext(hist){
   const proseRules = proseRulesText();
   if(proseRules) systemParts.push(proseRules);
   if(loreText) systemParts.push('## Lorebook\n\n' + loreText);
+  if(charText) systemParts.push('## Character sheets (keep every detail consistent)\n\n' + charText);
+  if(timelineText) systemParts.push('## Timeline (chronological; keep dates, order and flashbacks consistent)\n' + timelineText);
   if(useSummary) systemParts.push('## Story so far (summary of the earlier parts, which are not included below)\n\n' + summary);
 
   const messages = [];
@@ -1272,6 +1317,8 @@ function buildContext(hist){
       system: estTokens(wordCount(sys) + wordCount(proseRules)),
       lore: estTokens(wordCount(loreText)),
       loreHits: loreHits.map(h => h.title),
+      continuity: estTokens(wordCount(charText) + wordCount(timelineText)),
+      charHits: charHits.map(c => c.name),
       summary: useSummary ? estTokens(wordCount(summary)) : 0,
       history: estTokens(historyWords),
       kept: kept.length,
@@ -1299,10 +1346,11 @@ function renderMeter(){
   const text = $('input').value.trim();
   const hist = text ? history.concat([{role:'user', content: text}]) : history;
   const s = buildContext(hist).stats;
-  const total = s.system + s.lore + s.summary + s.history;
+  const total = s.system + s.lore + s.continuity + s.summary + s.history;
   const detail =
     `Próximo pedido ≈ ${fmtK(total)} tokens\n` +
     `sistema ${fmtK(s.system)} · lore ${fmtK(s.lore)} (${s.loreHits.length} entradas${s.loreHits.length ? ': ' + s.loreHits.join(', ') : ''})\n` +
+    `fichas/cronologia ${fmtK(s.continuity)}${s.charHits.length ? ' (' + s.charHits.join(', ') + ')' : ''}\n` +
     `resumo ${fmtK(s.summary)} · histórico ${fmtK(s.history)} (${s.kept}/${s.total} entradas)` +
     (s.summaryMissing ? `\n⚠ ${s.omitted} entradas cortadas sem resumo — o modelo não as vê.` : '') +
     (total > 100000 ? '\n⚠ pedido muito grande: define um limite de histórico e usa o resumo.' : '');
@@ -2134,6 +2182,7 @@ function splitChapter(entry){
 }
 
 function toggleOutline(){
+  $('continuity').classList.remove('open');
   $('outline').classList.toggle('open');
   renderOutline();
 }
@@ -2298,6 +2347,400 @@ async function manualContinue(){
   }finally{
     endGeneration();
   }
+}
+
+/* ---------------- continuity: characters & timeline ---------------- */
+
+const CHAR_FIELDS = [
+  ['aliases', 'alcunhas / outros nomes (separados por vírgulas — também ativam a ficha)'],
+  ['appearance', 'aparência'],
+  ['marks', 'cicatrizes, marcas, particularidades físicas'],
+  ['relationships', 'relações'],
+  ['state', 'estado atual / fase do arco'],
+  ['notes', 'notas (segredos, o que sabe, voz, manias)']
+];
+const CHAR_LABELS_EN = {appearance: 'Appearance', marks: 'Scars/marks', relationships: 'Relationships', state: 'Current state / arc', notes: 'Notes'};
+
+function sanitizeCharacter(c){
+  if(!c || typeof c !== 'object' || typeof c.name !== 'string' || !c.name.trim()) return null;
+  const out = {id: typeof c.id === 'string' ? c.id : newId('c_'), name: c.name.trim().slice(0, 80), always: !!c.always};
+  for(const [k] of CHAR_FIELDS) out[k] = typeof c[k] === 'string' ? c[k] : '';
+  return out;
+}
+
+function sanitizeEvent(e){
+  if(!e || typeof e !== 'object') return null;
+  const what = typeof e.what === 'string' ? e.what : '';
+  if(!what.trim()) return null;
+  return {id: typeof e.id === 'string' ? e.id : newId('t_'), when: typeof e.when === 'string' ? e.when : '', what};
+}
+
+function characterKeys(c){
+  return [c.name, ...(c.aliases || '').split(',')].map(k => k.trim()).filter(Boolean);
+}
+
+// Sheets for characters named in the brief / previous chapter tail / summary,
+// plus the ones marked "sempre enviar".
+function selectCharacters(scanText, chat){
+  return (chat.characters || []).filter(c => c.always || characterKeys(c).some(k => keyMatches(k, scanText)));
+}
+
+function characterSheetText(c){
+  const lines = [`### ${c.name}${c.aliases && c.aliases.trim() ? ' (also: ' + c.aliases.trim() + ')' : ''}`];
+  for(const k of Object.keys(CHAR_LABELS_EN)) if(c[k] && c[k].trim()) lines.push(`${CHAR_LABELS_EN[k]}: ${c[k].trim()}`);
+  return lines.join('\n');
+}
+
+function timelineAsText(timeline){
+  return timeline.filter(e => e.what && e.what.trim())
+    .map(e => `- ${e.when && e.when.trim() ? e.when.trim() + ': ' : ''}${e.what.trim()}`).join('\n');
+}
+
+function curChat(){ return chats[currentChatId]; }
+
+function continuityChanged(){
+  persistChats();
+  updateMeter();
+}
+
+function toggleContinuity(){
+  $('outline').classList.remove('open');
+  $('continuity').classList.toggle('open');
+  renderContinuity();
+}
+
+function renderContinuity(){
+  const box = $('continuity');
+  if(!box.classList.contains('open')) return;
+  const chat = curChat();
+  if(!chat) return;
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'ol-head';
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Continuidade';
+  const sp = document.createElement('span'); sp.className = 'spacer';
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.style.cssText = 'background:none;border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:4px 9px;cursor:pointer;';
+  close.onclick = toggleContinuity;
+  head.append(h2, sp, close);
+  box.appendChild(head);
+
+  const tabs = document.createElement('div');
+  tabs.className = 'ct-tabs';
+  [['characters', `Personagens (${chat.characters.length})`], ['timeline', `Cronologia (${chat.timeline.length})`]].forEach(([k, label]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.className = continuityTab === k ? 'active' : '';
+    b.onclick = () => { continuityTab = k; renderContinuity(); };
+    tabs.appendChild(b);
+  });
+  box.appendChild(tabs);
+  if(continuityTab === 'characters') renderCharacters(box, chat);
+  else renderTimeline(box, chat);
+}
+
+function renderCharacters(box, chat){
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = 'A ficha vai no pedido quando o nome ou uma alcunha aparece na indicação, no fim do capítulo anterior ou no resumo (ou sempre, se marcares). Clica no nome para editar.';
+  box.appendChild(hint);
+  const add = document.createElement('div');
+  add.className = 'mini-actions';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '+ personagem';
+  addBtn.onclick = () => {
+    const name = prompt('Nome da personagem:');
+    if(!name || !name.trim()) return;
+    const c = sanitizeCharacter({name});
+    chat.characters.push(c);
+    openCharId = c.id;
+    continuityChanged();
+    renderContinuity();
+  };
+  add.appendChild(addBtn);
+  box.appendChild(add);
+
+  chat.characters.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = 'char-card';
+    const top = document.createElement('div');
+    top.className = 'ct-top';
+    const name = document.createElement('span');
+    name.className = 'ct-name';
+    name.textContent = c.name;
+    name.onclick = () => { openCharId = openCharId === c.id ? null : c.id; renderContinuity(); };
+    const alwaysL = document.createElement('label');
+    alwaysL.className = 'ct-sub';
+    alwaysL.style.cssText = 'display:flex;align-items:center;gap:4px;margin:0;';
+    const always = document.createElement('input');
+    always.type = 'checkbox'; always.style.width = 'auto'; always.checked = c.always;
+    always.onchange = () => { c.always = always.checked; continuityChanged(); };
+    alwaysL.append(always, document.createTextNode('sempre enviar'));
+    top.append(name, alwaysL);
+    card.appendChild(top);
+    const sub = document.createElement('div');
+    sub.className = 'ct-sub';
+    // Summary line: nicknames + the most useful filled-in field.
+    const main = [c.state, c.appearance, c.marks, c.relationships, c.notes].find(x => x && x.trim());
+    sub.textContent = [c.aliases, main].filter(x => x && x.trim()).join(' · ') || 'ficha vazia';
+    card.appendChild(sub);
+    if(openCharId === c.id){
+      const nameL = document.createElement('label'); nameL.textContent = 'nome';
+      const nameIn = document.createElement('input'); nameIn.type = 'text'; nameIn.value = c.name;
+      nameIn.oninput = () => { if(nameIn.value.trim()){ c.name = nameIn.value.trim(); name.textContent = c.name; continuityChanged(); } };
+      card.append(nameL, nameIn);
+      for(const [k, label] of CHAR_FIELDS){
+        const l = document.createElement('label'); l.textContent = label;
+        const ta = document.createElement(k === 'aliases' ? 'input' : 'textarea');
+        if(k === 'aliases') ta.type = 'text';
+        ta.value = c[k] || '';
+        ta.oninput = () => { c[k] = ta.value; continuityChanged(); };
+        card.append(l, ta);
+      }
+      const bar = document.createElement('div');
+      bar.className = 'mini-actions';
+      const del = document.createElement('button');
+      del.textContent = 'apagar personagem';
+      del.onclick = () => {
+        if(!confirm(`Apagar a ficha de ${c.name}?`)) return;
+        chat.characters.splice(i, 1);
+        continuityChanged();
+        renderContinuity();
+      };
+      bar.appendChild(del);
+      card.appendChild(bar);
+    }
+    box.appendChild(card);
+  });
+}
+
+function renderTimeline(box, chat){
+  const line = document.createElement('label');
+  line.className = 'checkline';
+  line.style.margin = '0 0 8px';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.style.width = 'auto'; cb.checked = chat.sendTimeline;
+  cb.onchange = () => { chat.sendTimeline = cb.checked; continuityChanged(); };
+  line.append(cb, document.createTextNode(' enviar a cronologia ao modelo em todos os pedidos'));
+  box.appendChild(line);
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = 'Por ordem cronológica da história (não da escrita) — útil para flashbacks. "quando" é texto livre: "Inverno de 1890", "10 anos antes", "Cap. 3"...';
+  box.appendChild(hint);
+  chat.timeline.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'tl-row';
+    const when = document.createElement('input');
+    when.type = 'text'; when.placeholder = 'quando'; when.value = e.when;
+    when.oninput = () => { e.when = when.value; continuityChanged(); };
+    const what = document.createElement('textarea');
+    what.placeholder = 'o que acontece'; what.value = e.what;
+    what.oninput = () => { e.what = what.value; continuityChanged(); };
+    const acts = document.createElement('div');
+    acts.className = 'mini-actions';
+    const mk = (label, fn, dis) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; b.disabled = !!dis; acts.appendChild(b); };
+    const move = d => { const [x] = chat.timeline.splice(i, 1); chat.timeline.splice(i + d, 0, x); continuityChanged(); renderContinuity(); };
+    mk('↑', () => move(-1), i === 0);
+    mk('↓', () => move(1), i === chat.timeline.length - 1);
+    mk('×', () => { if(!confirm('Apagar este evento?')) return; chat.timeline.splice(i, 1); continuityChanged(); renderContinuity(); });
+    row.append(when, what, acts);
+    box.appendChild(row);
+  });
+  const add = document.createElement('div');
+  add.className = 'mini-actions';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '+ evento';
+  addBtn.onclick = () => { chat.timeline.push({id: newId('t_'), when: '', what: ''}); continuityChanged(); renderContinuity(); };
+  add.appendChild(addBtn);
+  box.appendChild(add);
+}
+
+/* ---- AI helpers: contradiction check & sheet updates ---- */
+
+function continuityMaterial(chat){
+  const sheets = (chat.characters || []).map(characterSheetText).join('\n\n') || '(none)';
+  const tl = (chat.timeline || []).length ? timelineAsText(chat.timeline) : '(none)';
+  const summary = $('storySummary').value.trim() || '(none)';
+  return `CHARACTER SHEETS:\n${sheets}\n\nTIMELINE:\n${tl}\n\nSTORY SO FAR:\n${summary}`;
+}
+
+async function runContinuityCall(entry, kind){
+  const chat = curChat();
+  if(!chat || history.indexOf(entry) === -1) return;
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
+  const letter = $('activeProvider').value;
+  const chapterNo = history.filter(h => h.role === 'assistant').indexOf(entry) + 1;
+  let messages;
+  if(kind === 'check'){
+    messages = [
+      {role: 'system', content: 'You are a meticulous continuity editor for a novel in progress.'},
+      {role: 'user', content: `${continuityMaterial(chat)}\n\nCHAPTER ${chapterNo} TO CHECK:\n<<<\n${entry.content}\n>>>\n\n` +
+        'List every contradiction between this chapter and the character sheets, the timeline or the story so far: physical details, names, ages, relationships, who knows what, dates and order of events, where people are. ' +
+        'For each one: quote the chapter passage briefly, say what it contradicts, and suggest a fix. Do not list style issues. ' +
+        'If there are none, answer exactly: NO CONTRADICTIONS. Answer in the language of the chapter.'}
+    ];
+  } else {
+    const names = (chat.characters || []).map(c => c.name).join(', ') || '(none yet)';
+    messages = [
+      {role: 'system', content: 'You maintain the continuity records (character sheets and timeline) of a novel in progress. You answer with JSON only.'},
+      {role: 'user', content: `${continuityMaterial(chat)}\n\nCHAPTER ${chapterNo}:\n<<<\n${entry.content}\n>>>\n\n` +
+        'Update the records with what this chapter establishes or changes. Return ONLY a JSON object of this shape:\n' +
+        '{"characters":[{"name":"...","new":false,"aliases":"...","appearance":"...","marks":"...","relationships":"...","state":"...","notes":"..."}],"events":[{"when":"...","what":"..."}]}\n' +
+        `Existing characters: ${names}. Use their exact names. For an existing character include only the fields this chapter adds to or changes, each with its complete updated text (merge with the current sheet — do not lose existing details). ` +
+        'Mark characters that have no sheet yet with "new": true (only characters that matter to the story). "state" is where the character is now, physically and emotionally, and the stage of their arc. ' +
+        'Events: only important new events, in story-chronological wording, with "when" as precise as the text allows. Write the values in the language of the chapter. No commentary outside the JSON.'}
+    ];
+  }
+  startGenTimer(kind === 'check' ? 'a verificar a continuidade...' : 'a preparar a atualização das fichas...');
+  try{
+    const attempt = await withFailover(letter, l => callProvider(l, messages));
+    const text = attempt.value.content.trim();
+    const res = continuityResults.get(entry) || {};
+    if(kind === 'check'){
+      res.check = text || 'NO CONTRADICTIONS';
+    } else {
+      res.proposal = parseContinuityProposal(text, chat);
+      if(!res.proposal) throw new Error('a resposta não veio num JSON válido — tenta outra vez.');
+    }
+    continuityResults.set(entry, res);
+    setStatus(attempt.note || '', !!attempt.note);
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    setStatus(aborted ? 'interrompido.' : 'continuidade: ' + err.message, !aborted);
+  }finally{
+    endGeneration();
+    if(chatId === currentChatId) rerenderAllNoSave();
+  }
+}
+
+// Turns the model's JSON into a list of proposed changes the user can tick.
+function parseContinuityProposal(text, chat){
+  const start = text.indexOf('{'), end = text.lastIndexOf('}');
+  if(start === -1 || end <= start) return null;
+  let data;
+  try{ data = JSON.parse(text.slice(start, end + 1)); }catch(e){ return null; }
+  const items = [];
+  for(const c of Array.isArray(data.characters) ? data.characters : []){
+    if(!c || typeof c.name !== 'string' || !c.name.trim()) continue;
+    const existing = (chat.characters || []).find(x => x.name.toLowerCase() === c.name.trim().toLowerCase() ||
+      characterKeys(x).some(k => k.toLowerCase() === c.name.trim().toLowerCase()));
+    const fields = {};
+    for(const [k] of CHAR_FIELDS) if(typeof c[k] === 'string' && c[k].trim() && (!existing || c[k].trim() !== (existing[k] || '').trim())) fields[k] = c[k].trim();
+    if(existing){
+      for(const [k, v] of Object.entries(fields)) items.push({type: 'field', charId: existing.id, name: existing.name, field: k, value: v, old: existing[k] || '', on: true});
+    } else {
+      items.push({type: 'newChar', name: c.name.trim(), fields, on: true});
+    }
+  }
+  for(const e of Array.isArray(data.events) ? data.events : []){
+    if(e && typeof e.what === 'string' && e.what.trim()) items.push({type: 'event', when: String(e.when || ''), what: e.what.trim(), on: true});
+  }
+  return {items};
+}
+
+function applyProposal(entry){
+  const chat = curChat();
+  const res = continuityResults.get(entry);
+  if(!chat || !res || !res.proposal) return;
+  let n = 0;
+  for(const it of res.proposal.items){
+    if(!it.on) continue;
+    if(it.type === 'field'){
+      const c = chat.characters.find(x => x.id === it.charId);
+      if(c){ c[it.field] = it.value; n++; }
+    } else if(it.type === 'newChar'){
+      chat.characters.push(sanitizeCharacter({name: it.name, ...it.fields}));
+      n++;
+    } else if(it.type === 'event'){
+      chat.timeline.push(sanitizeEvent({when: it.when, what: it.what}));
+      n++;
+    }
+  }
+  delete res.proposal;
+  continuityChanged();
+  renderContinuity();
+  rerenderAllNoSave();
+  setStatus(`${n} alterações aplicadas às fichas/cronologia.`);
+}
+
+const FIELD_LABEL_PT = {aliases: 'alcunhas', appearance: 'aparência', marks: 'marcas', relationships: 'relações', state: 'estado', notes: 'notas'};
+
+function continuityBox(entry){
+  const box = document.createElement('div');
+  box.className = 'continuity-box';
+  const head = document.createElement('div');
+  head.className = 'rev-head';
+  const chat = curChat() || {};
+  head.textContent = `Continuidade — ${(chat.characters || []).length} fichas, ${(chat.timeline || []).length} eventos na cronologia`;
+  box.appendChild(head);
+  const res = continuityResults.get(entry) || {};
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const mk = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; bar.appendChild(b); return b; };
+  mk('verificar contradições', () => runContinuityCall(entry, 'check'));
+  mk('atualizar fichas com este capítulo', () => runContinuityCall(entry, 'update'));
+  mk('abrir fichas', () => { if(!$('continuity').classList.contains('open')) toggleContinuity(); });
+  mk('fechar', () => { continuityOpenEntry = null; rerenderAllNoSave(); });
+  box.appendChild(bar);
+
+  if(res.check){
+    const r = document.createElement('div');
+    r.className = 'ct-result';
+    r.style.marginTop = '8px';
+    const clean = /^NO CONTRADICTIONS\.?$/i.test(res.check.trim());
+    r.textContent = clean ? 'Sem contradições encontradas.' : res.check;
+    box.appendChild(r);
+    if(!clean){
+      const fixBar = document.createElement('div');
+      fixBar.className = 'mini-actions';
+      const fix = document.createElement('button');
+      fix.textContent = 'rever para corrigir';
+      fix.onclick = () => {
+        entry.lastInstruction = 'Fix these continuity errors, and change nothing else:\n' + res.check;
+        continuityOpenEntry = null;
+        revisingEntry = entry;
+        rerenderAllNoSave();
+      };
+      fixBar.appendChild(fix);
+      box.appendChild(fixBar);
+    }
+  }
+  if(res.proposal){
+    const t = document.createElement('div');
+    t.style.marginTop = '8px';
+    t.className = 'ct-sub';
+    t.textContent = res.proposal.items.length ? 'Alterações propostas (desmarca o que não queres):' : 'Nada de novo a acrescentar às fichas.';
+    box.appendChild(t);
+    res.proposal.items.forEach(it => {
+      const row = document.createElement('label');
+      row.className = 'ct-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = it.on;
+      cb.onchange = () => { it.on = cb.checked; };
+      const txt = document.createElement('span');
+      if(it.type === 'field') txt.textContent = `${it.name} · ${FIELD_LABEL_PT[it.field]}: ${it.value}${it.old ? '  (antes: ' + it.old + ')' : ''}`;
+      else if(it.type === 'newChar') txt.textContent = `+ nova personagem: ${it.name}${Object.keys(it.fields).length ? ' — ' + Object.entries(it.fields).map(([k, v]) => FIELD_LABEL_PT[k] + ': ' + v).join('; ') : ''}`;
+      else txt.textContent = `+ evento: ${it.when ? it.when + ' — ' : ''}${it.what}`;
+      row.append(cb, txt);
+      box.appendChild(row);
+    });
+    if(res.proposal.items.length){
+      const ab = document.createElement('div');
+      ab.className = 'mini-actions';
+      const apply = document.createElement('button');
+      apply.textContent = 'aplicar';
+      apply.onclick = () => applyProposal(entry);
+      const discard = document.createElement('button');
+      discard.textContent = 'descartar';
+      discard.onclick = () => { delete res.proposal; rerenderAllNoSave(); };
+      ab.append(apply, discard);
+      box.appendChild(ab);
+    }
+  }
+  return box;
 }
 
 /* ---------------- prose quality ---------------- */
@@ -3233,7 +3676,8 @@ function newChatObject(from){
     bannedPhrases: from ? (from.bannedPhrases || '') : '',
     bannedInPrompt: from ? from.bannedInPrompt !== false : true,
     pov: from ? (from.pov || '') : '',
-    tense: from ? (from.tense || '') : ''
+    tense: from ? (from.tense || '') : '',
+    characters: [], timeline: [], sendTimeline: from ? !!from.sendTimeline : false
   };
 }
 
@@ -3252,6 +3696,8 @@ function loadChatIntoMemory(id){
   $('storyPov').value = chat.pov || '';
   $('storyTense').value = chat.tense || '';
   $('proseReport').textContent = '';
+  openCharId = null;
+  renderContinuity();
   loreOpenId = null;
   renderLorebookList();
   rerenderAllNoSave();
@@ -3310,6 +3756,9 @@ function migrateChatFields(chat, legacySystemPrompt, legacyLoreIds){
   if(typeof chat.bannedInPrompt !== 'boolean') chat.bannedInPrompt = true;
   if(typeof chat.pov !== 'string') chat.pov = '';
   if(typeof chat.tense !== 'string') chat.tense = '';
+  if(!Array.isArray(chat.characters)) chat.characters = [];
+  if(!Array.isArray(chat.timeline)) chat.timeline = [];
+  if(typeof chat.sendTimeline !== 'boolean') chat.sendTimeline = false;
   if(Array.isArray(chat.history)) chat.history.forEach(h => {
     if(!h) return;
     delete h.chapter;
@@ -3449,6 +3898,7 @@ function downloadJSON(){
     summaryCovered: chat.summaryCovered || 0,
     bannedPhrases: chat.bannedPhrases || '', bannedInPrompt: chat.bannedInPrompt !== false,
     pov: chat.pov || '', tense: chat.tense || '',
+    characters: chat.characters || [], timeline: chat.timeline || [], sendTimeline: !!chat.sendTimeline,
     history: history
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
@@ -3492,6 +3942,9 @@ $('importInput').addEventListener('change', async (e) => {
     if(typeof data.bannedInPrompt === 'boolean') chat.bannedInPrompt = data.bannedInPrompt;
     if(['', 'first', 'third-limited', 'third-omniscient'].includes(data.pov)) chat.pov = data.pov;
     if(['', 'past', 'present'].includes(data.tense)) chat.tense = data.tense;
+    if(Array.isArray(data.characters)) chat.characters = data.characters.map(sanitizeCharacter).filter(Boolean);
+    if(Array.isArray(data.timeline)) chat.timeline = data.timeline.map(sanitizeEvent).filter(Boolean);
+    if(typeof data.sendTimeline === 'boolean') chat.sendTimeline = data.sendTimeline;
     chats[id] = chat;
     loadChatIntoMemory(id);
     persistChats(id);

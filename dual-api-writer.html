@@ -256,6 +256,22 @@
     box-shadow:0 10px 30px #0008; display:none;
   }
   #searchPanel.open{ display:block; }
+  #logPanel{
+    position:fixed; top:0; right:0; bottom:0; width:min(560px, 100%); z-index:34;
+    background:var(--panel); border-left:1px solid var(--border); overflow-y:auto; padding:16px 16px 30px;
+    box-shadow:-10px 0 30px #0006; display:none; font-size:12.5px;
+  }
+  #logPanel.open{ display:block; }
+  #logPanel h2{ font-family:var(--serif); font-weight:400; font-size:19px; margin:0; }
+  #logPanel .ol-head{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  #logPanel .ol-head .spacer{ flex:1; }
+  #logPanel table{ width:100%; border-collapse:collapse; margin:6px 0 14px; }
+  #logPanel th, #logPanel td{ text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); font-weight:normal; }
+  #logPanel th{ color:var(--muted); font-size:11.5px; }
+  #logPanel td.num, #logPanel th.num{ text-align:right; font-variant-numeric:tabular-nums; }
+  #logPanel h3{ font-size:12px; color:var(--gold); font-weight:normal; margin:10px 0 2px; }
+  #logPanel .lg-row{ padding:5px 0; border-bottom:1px solid var(--border); color:var(--muted); line-height:1.45; }
+  #logPanel .lg-row .err{ color:#e06b6b; }
   #searchPanel .ol-head{ display:flex; align-items:center; gap:8px; margin-bottom:4px; }
   #searchPanel .ol-head .spacer{ flex:1; }
   #searchPanel .x{ background:none; border:1px solid var(--border); color:var(--muted); border-radius:5px; padding:2px 8px; cursor:pointer; }
@@ -379,6 +395,16 @@
     </div>
     <div class="row">
       <div>
+        <label>preço entrada (US$/1M tokens)</label>
+        <input type="number" id="pA-priceIn" value="0" min="0" step="0.05">
+      </div>
+      <div>
+        <label>preço saída (US$/1M tokens)</label>
+        <input type="number" id="pA-priceOut" value="0" min="0" step="0.05">
+      </div>
+    </div>
+    <div class="row">
+      <div>
         <label>Thinking</label>
         <select id="pA-thinking">
           <option value="auto">Automático</option>
@@ -424,6 +450,16 @@
       <div>
         <label>temperatura</label>
         <input type="number" id="pB-temperature" value="1.0" min="0" max="2" step="0.05">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>preço entrada (US$/1M tokens)</label>
+        <input type="number" id="pB-priceIn" value="0" min="0" step="0.05">
+      </div>
+      <div>
+        <label>preço saída (US$/1M tokens)</label>
+        <input type="number" id="pB-priceOut" value="0" min="0" step="0.05">
       </div>
     </div>
     <div class="row">
@@ -592,6 +628,7 @@
     <p class="hint">O check ativa o ficheiro <b>nesta história</b>. Um ficheiro de texto é enviado sempre, a não ser que a primeira linha seja <code>keys: nome, alcunha</code> — aí só entra quando uma dessas palavras aparece na indicação, no fim do capítulo anterior ou no resumo. Worldbooks do SillyTavern usam as chaves e entradas "constant" de cada entrada. Clica no nome para ver/editar.</p>
   </fieldset>
 
+  <button class="secondary" onclick="toggleLog()">📊 Registo de pedidos e custos</button>
   <button class="secondary" onclick="clearStory()">Limpar história atual</button>
 </div>
 
@@ -617,6 +654,7 @@
   </div>
   <div id="outline"></div>
   <div id="continuity"></div>
+  <div id="logPanel"></div>
   <div id="searchPanel">
     <div class="ol-head"><b style="font-family:var(--serif);font-weight:400;font-size:16px;">Procurar e substituir</b><span class="spacer"></span>
       <button class="x" onclick="toggleSearch()">×</button></div>
@@ -1506,7 +1544,21 @@ async function retryBackoff(attempt, retryAfterHeader, reason, signal){
 }
 
 // opts.onDelta(textSoFar) receives the round's text as it streams in.
+// Every provider call goes through here so it lands in the request log.
 async function callProvider(letter, messages, opts = {}){
+  const t0 = Date.now();
+  try{
+    const r = await callProviderInner(letter, messages, opts);
+    logRequest(letter, messages, opts.kind, t0, r.content, r.usage, r.interrupted ? 'ligação caiu' : r.finishReason);
+    return r;
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    logRequest(letter, messages, opts.kind, t0, (aborted && err.partialContent) || '', null, aborted ? 'interrompido' : 'erro: ' + err.message.slice(0, 120));
+    throw err;
+  }
+}
+
+async function callProviderInner(letter, messages, opts = {}){
   const {onDelta} = opts;
   const cfg = providerConfig(letter);
   if(!cfg.url || !cfg.key || !cfg.model){
@@ -1623,7 +1675,7 @@ function parseCompletionJSON(text, label){
   if(!choice) throw new Error(`${label}: resposta sem "choices".`);
   const content = choice.message?.content ?? choice.text ?? '';
   const finishReason = choice.finish_reason || choice.stop_reason || 'stop';
-  return {content, finishReason, providerLabel: label};
+  return {content, finishReason, providerLabel: label, usage: data.usage || null};
 }
 
 // Reads either an SSE stream (stream:true) or a plain JSON body — decided by
@@ -1637,6 +1689,7 @@ async function readCompletion(res, label, ctx){
   let content = '';
   let finishReason = null;
   let sawDone = false;
+  let usage = null; // some providers put token usage in the last chunk
 
   const handleLine = (line) => {
     line = line.trim();
@@ -1647,6 +1700,7 @@ async function readCompletion(res, label, ctx){
     let data;
     try{ data = JSON.parse(payload); }catch(e){ return; }
     if(data.error) throw new Error(`${label}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+    if(data.usage) usage = data.usage;
     const choice = data.choices && data.choices[0];
     if(!choice) return;
     const piece = (choice.delta && choice.delta.content) || choice.text || (choice.message && choice.message.content) || '';
@@ -1686,13 +1740,13 @@ async function readCompletion(res, label, ctx){
     if(content && (ctx.timedOut() || err instanceof TypeError)){
       // Connection dropped mid-stream: keep what arrived and let the
       // auto-continue loop resume from there (treated like a max_tokens cut).
-      return {content, finishReason: 'length', providerLabel: label, interrupted: true};
+      return {content, finishReason: 'length', providerLabel: label, interrupted: true, usage};
     }
     if(ctx.timedOut()) throw new Error(`${label} deixou de enviar dados durante ${ctx.timeoutMs / 1000}s.`);
     throw err;
   }
   // A stream that ends without finish_reason and without [DONE] was cut off.
-  return {content, finishReason: finishReason || (sawDone ? 'stop' : 'length'), providerLabel: label};
+  return {content, finishReason: finishReason || (sawDone ? 'stop' : 'length'), providerLabel: label, usage};
 }
 
 let abortController = null;
@@ -1818,6 +1872,7 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
     const runRound = async (l) => {
       try{
         return await callProvider(l, messages, {
+          kind: 'geração',
           onDelta: (t) => {
             const shown = full + sepFor(t) + t;
             genProgress.text = shown;
@@ -1994,7 +2049,7 @@ async function planBeats(chatId, userEntry){
   const messages = buildMessages(null, history.slice(0, idx).concat([{role: 'user', content: userEntry.content}]));
   messages[messages.length - 1] = {role: 'user', content: userEntry.content + beatsPrompt()};
   startGenTimer(`a planear o capítulo com ${providerConfig(letter).label}...`);
-  const attempt = await withFailover(letter, l => callProvider(l, messages));
+  const attempt = await withFailover(letter, l => callProvider(l, messages, {kind: 'plano'}));
   const beats = attempt.value.content.trim();
   if(!beats) throw new Error('o modelo devolveu um plano vazio.');
   userEntry.beats = beats;
@@ -2713,7 +2768,7 @@ async function runContinuityCall(entry, kind){
   }
   startGenTimer(kind === 'check' ? 'a verificar a continuidade...' : 'a preparar a atualização das fichas...');
   try{
-    const attempt = await withFailover(letter, l => callProvider(l, messages));
+    const attempt = await withFailover(letter, l => callProvider(l, messages, {kind: 'continuidade'}));
     const text = attempt.value.content.trim();
     const res = continuityResults.get(entry) || {};
     if(kind === 'check'){
@@ -3576,7 +3631,7 @@ async function summarizeStory(chatId = currentChatId, opts = {}){
       const attempt = await withFailover(letter, l => callProvider(l, [
         {role: 'system', content: SUMMARY_SYSTEM_PROMPT},
         {role: 'user', content: `CURRENT SUMMARY:\n${summary || '(none yet)'}\n\nNEW CHAPTERS TO FOLD IN:\n\n${text}\n\nReturn only the complete updated summary.`}
-      ]));
+      ], {kind: 'resumo'}));
       letter = attempt.letter;
       if(attempt.note) notes.push(attempt.note);
       const {content} = attempt.value;
@@ -3900,6 +3955,10 @@ async function loadAll(legacySystemPrompt){
   if(lorebookFiles.some(f => 'legacyActive' in f)) loreMigrated = true;
   lorebookFiles.forEach(f => delete f.legacyActive);
 
+  // Request log
+  const storedLog = await Store.get('requestLog');
+  requestLog = Array.isArray(storedLog) ? storedLog : [];
+
   // Stories
   const stored = await Store.all('chat:');
   chats = {};
@@ -3967,6 +4026,146 @@ function clearStory(){
   saveHistory();
   updateSummaryInfo();
   updateMeter();
+}
+
+/* ---------------- request & cost log ---------------- */
+
+let requestLog = [];      // [{ts, chatId, story, kind, provider, model, inTok, outTok, est, ms, result, cost}]
+const MAX_LOG = 1000;
+let logSaveTimer = null;
+
+function saveLogSoon(){
+  if(logSaveTimer) return;
+  logSaveTimer = setTimeout(() => {
+    logSaveTimer = null;
+    Store.set('requestLog', requestLog.slice(-MAX_LOG)).catch(() => {});
+  }, 2000);
+}
+
+function logRequest(letter, messages, kind, t0, content, usage, result){
+  const cfg = providerConfig(letter);
+  // Real counts when the provider reports them, otherwise an estimate.
+  const est = !(usage && (usage.prompt_tokens || usage.input_tokens));
+  const inTok = est ? estTokens(wordCount(messages.map(m => m.content).join('\n'))) : (usage.prompt_tokens || usage.input_tokens);
+  const outTok = est ? estTokens(wordCount(content || '')) : (usage.completion_tokens || usage.output_tokens || 0);
+  const priceIn = parseFloat($('p' + letter + '-priceIn').value) || 0;
+  const priceOut = parseFloat($('p' + letter + '-priceOut').value) || 0;
+  const chatId = genChatId || currentChatId;
+  requestLog.push({
+    ts: Date.now(), chatId, story: chats[chatId] ? chatTitleFor(chats[chatId]) : '',
+    kind: kind || 'pedido', provider: cfg.label, model: cfg.model,
+    inTok, outTok, est, ms: Date.now() - t0, result: String(result || ''),
+    cost: priceIn || priceOut ? (inTok * priceIn + outTok * priceOut) / 1e6 : null
+  });
+  if(requestLog.length > MAX_LOG) requestLog.splice(0, requestLog.length - MAX_LOG);
+  saveLogSoon();
+  renderLog();
+}
+
+function fmtCost(c){ return c === null || c === undefined ? '—' : 'US$ ' + (c < 0.01 ? c.toFixed(4) : c.toFixed(2)); }
+function fmtInt(n){ return Math.round(n).toLocaleString('pt-PT'); }
+
+function toggleLog(){
+  $('logPanel').classList.toggle('open');
+  renderLog();
+}
+
+function renderLog(){
+  const box = $('logPanel');
+  if(!box.classList.contains('open')) return;
+  box.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'ol-head';
+  const h2 = document.createElement('h2'); h2.textContent = 'Registo de pedidos';
+  const sp = document.createElement('span'); sp.className = 'spacer';
+  const close = document.createElement('button');
+  close.textContent = '×';
+  close.style.cssText = 'background:none;border:1px solid var(--border);color:var(--muted);border-radius:5px;padding:4px 9px;cursor:pointer;';
+  close.onclick = toggleLog;
+  head.append(h2, sp, close);
+  box.appendChild(head);
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = 'Custos estimados com os preços que puseste em cada provider (US$ por milhão de tokens). Valores com ~ são estimativas: o provider não devolveu a contagem de tokens (comum com streaming).';
+  box.appendChild(hint);
+
+  const table = (title, rows) => {
+    const h3 = document.createElement('h3'); h3.textContent = title;
+    const t = document.createElement('table');
+    const tr0 = document.createElement('tr');
+    ['', 'pedidos', 'tokens entrada', 'tokens saída', 'custo'].forEach((c, i) => {
+      const th = document.createElement('th'); th.textContent = c; if(i) th.className = 'num'; tr0.appendChild(th);
+    });
+    t.appendChild(tr0);
+    for(const r of rows){
+      const tr = document.createElement('tr');
+      [r.name, fmtInt(r.n), (r.est ? '~' : '') + fmtInt(r.inTok), (r.est ? '~' : '') + fmtInt(r.outTok), fmtCost(r.cost)].forEach((c, i) => {
+        const td = document.createElement('td'); td.textContent = c; if(i) td.className = 'num'; tr.appendChild(td);
+      });
+      t.appendChild(tr);
+    }
+    box.append(h3, t);
+  };
+  const group = (items, keyFn) => {
+    const m = new Map();
+    for(const e of items){
+      const k = keyFn(e);
+      const g = m.get(k) || {name: k, n: 0, inTok: 0, outTok: 0, cost: null, est: false};
+      g.n++; g.inTok += e.inTok; g.outTok += e.outTok; g.est = g.est || e.est;
+      if(e.cost !== null) g.cost = (g.cost || 0) + e.cost;
+      m.set(k, g);
+    }
+    return [...m.values()];
+  };
+  if(!requestLog.length){
+    const p = document.createElement('p'); p.className = 'hint'; p.textContent = 'Ainda não há pedidos registados.';
+    box.appendChild(p);
+    return;
+  }
+  table('Por provider (todo o registo)', group(requestLog, e => `${e.provider} · ${e.model}`));
+  const mine = requestLog.filter(e => e.chatId === currentChatId);
+  if(mine.length) table(`Esta história, por tipo`, group(mine, e => e.kind));
+
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const csv = document.createElement('button');
+  csv.textContent = 'exportar CSV';
+  csv.onclick = exportLogCsv;
+  const clear = document.createElement('button');
+  clear.textContent = 'limpar registo';
+  clear.onclick = () => {
+    if(!confirm('Apagar todo o registo de pedidos?')) return;
+    requestLog = [];
+    Store.set('requestLog', []).catch(() => {});
+    renderLog();
+  };
+  bar.append(csv, clear);
+  box.appendChild(bar);
+
+  const h3 = document.createElement('h3'); h3.textContent = `Últimos pedidos (${Math.min(100, requestLog.length)} de ${requestLog.length})`;
+  box.appendChild(h3);
+  for(const e of requestLog.slice(-100).reverse()){
+    const row = document.createElement('div');
+    row.className = 'lg-row';
+    const when = new Date(e.ts).toLocaleString('pt-PT', {dateStyle: 'short', timeStyle: 'short'});
+    const res = document.createElement('span');
+    res.className = e.result.startsWith('erro') ? 'err' : '';
+    res.textContent = e.result;
+    row.append(document.createTextNode(
+      `${when} · ${e.kind} · ${e.provider} (${e.model}) · ${e.est ? '~' : ''}${fmtInt(e.inTok)} → ${e.est ? '~' : ''}${fmtInt(e.outTok)} tokens · ${fmtCost(e.cost)} · ${(e.ms / 1000).toFixed(1)}s · ${e.story ? '“' + e.story + '” · ' : ''}`), res);
+    box.appendChild(row);
+  }
+}
+
+function exportLogCsv(){
+  const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['data', 'historia', 'tipo', 'provider', 'modelo', 'tokens_entrada', 'tokens_saida', 'estimado', 'segundos', 'resultado', 'custo_usd'].join(',')];
+  for(const e of requestLog){
+    lines.push([new Date(e.ts).toISOString(), e.story, e.kind, e.provider, e.model, e.inTok, e.outTok, e.est ? 'sim' : 'nao',
+                (e.ms / 1000).toFixed(1), e.result, e.cost === null ? '' : e.cost.toFixed(6)].map(esc).join(','));
+  }
+  saveBlob(new Blob(['\ufeff' + lines.join('\n')], {type: 'text/csv;charset=utf-8'}), 'registo-pedidos.csv');
 }
 
 /* ---------------- model list (/models) ---------------- */
@@ -4513,7 +4712,7 @@ $('importInput').addEventListener('change', async (e) => {
 
 // Global settings (providers, generation). The system prompt, summary and
 // lore selection are per story and live in the story itself.
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','floorInChat','failover','failoverImmediate','loreBudget','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider','exportAuthor','exportStrip'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pA-priceIn','pA-priceOut','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','pB-priceIn','pB-priceOut','rememberKeys','autoContinue','maxContinues','wordFloor','floorInChat','failover','failoverImmediate','loreBudget','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider','exportAuthor','exportStrip'];
 const KEY_IDS = ['pA-key', 'pB-key'];
 const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
 

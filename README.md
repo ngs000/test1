@@ -66,7 +66,8 @@ Then, in the sidebar:
 - The shown variant *is* the chapter (context, export, summary). Edits, revisions and "Continuar" apply to the shown variant and are kept when you flip.
 - **apagar variante** removes the shown one (its text stays in "versões"). Up to 20 variants per chapter; splitting or merging a chapter keeps only the shown variant.
 - Retries with backoff on 429/5xx/network errors (honours `Retry-After`) and a per-request timeout.
-- **Failover**: if the selected provider still fails after retries, the same request goes once to the other provider. Mixed chapters are labelled `A + B`.
+- **Failover**: if the selected provider still fails after retries, the same request goes once to the other provider. Mixed chapters are labelled `A + B`. With **failover imediato** it switches on the first error, without retrying.
+- The **word floor** applies in Author mode only (a checkbox extends it to Chat mode).
 
 **Context for long novels**
 - Per-story **history limit** (words): older entries are replaced by an editable **"story so far" summary**, which the AI can update on demand or after each chapter.
@@ -77,6 +78,7 @@ Then, in the sidebar:
 - Text files (`.md`, `.txt`): always sent, or keyword-triggered when the first line is `keys: name, alias`.
 - **SillyTavern worldbook `.json`** import: keys, constant, disabled and order are respected.
 - View/edit entries in the app.
+- **Lore limit per request** (words): always-sent entries first, then keyword hits; what does not fit is listed in the token meter.
 
 **Data**
 - Stored in IndexedDB (no 5MB localStorage limit); older localStorage data is migrated automatically.
@@ -84,6 +86,9 @@ Then, in the sidebar:
 - **Exportar…**: `.txt`, `.md`, **`.epub`** (title page, table of contents, one file per chapter; passes EPUBCheck with no errors or warnings) and **`.docx`** (title page, each chapter on a new page, book-style paragraphs). Book title (per story) and author are set in the export panel; `*italic*`/`**bold**` become real formatting and `* * *` lines become scene breaks. "Remover blocos de estrutura" (on by default) strips `<plan>`, `<ledger>`, `<self-check>` and `[DIRECTIONS]` from exports and "Copiar tudo". Everything is built in the browser (small built-in ZIP writer, no libraries).
 - Option to keep API keys only for the current tab session.
 - Per-provider **extra body JSON** (e.g. `{"frequency_penalty": 0.3}`; `null` removes a field such as `{"thinking": null}`).
+- **↻** next to each model field loads the provider's model list (`/models`), directly or through the proxy.
+- **🔍 Procurar**: search the whole story (case, whole-word, regex, include briefs), jump to results, and **substituir tudo** (changed chapters keep their previous text in "versões").
+- **📊 Registo de pedidos e custos**: every request with provider, model, tokens (real when the provider reports them, otherwise estimated "~"), duration and result; totals per provider and per story, and cost from the per-provider prices (US$ per 1M tokens). CSV export.
 
 ## How it works (for developers)
 
@@ -97,7 +102,7 @@ Then, in the sidebar:
 
 ## What's left to do
 
-Implemented from the audit: all listed bugs (B1–B21), the context manager (F1), lorebook (F2), streaming (F3), failover (part of F4), revision workflow with versions (F5), import (F6), sampling via extra body (F10), resilience (F12). Still open, roughly in order of value:
+Everything from the audit is implemented: all listed bugs (B1–B21) and features F1–F17, except where noted below.
 
 1. ~~Revision workflow (F5)~~ — done.
 2. ~~First-class chapters (F7)~~ — done.
@@ -106,9 +111,13 @@ Implemented from the audit: all listed bugs (B1–B21), the context manager (F1)
 5. ~~Prose tooling (F9)~~ — done.
 6. ~~Continuity tracker (F8)~~ — done.
 7. ~~Exports (F11)~~ — done.
-8. **Smaller items** — lore token budget cap; option to fail over immediately instead of retrying first; word floor only in Author mode; search & replace; model list from `/models`; request/cost log (F14–F17).
+8. ~~Smaller items~~ — done: lore budget, immediate failover, floor only in Author mode, search & replace, model list, request/cost log.
+
+Not done (deliberately):
+- **PWA / offline install (F15)** — the app already works offline from the local server; the data already lives in IndexedDB.
+- **Distraction-free reading mode, prompt/preset library (F14, F16)** — small, can be added if wanted.
 
 Known limitations:
 - The summary tracks *how many* chapters it covers, not *which*: after deleting, regenerating, reordering, merging, splitting or generating an earlier chapter, use **refazer do zero** (the app reminds you).
-- Token counts are estimates (words × 1.6).
+- Token counts in the meter are estimates (words × 1.6); the request log uses the provider's real counts when it sends them.
 - Browser tests were run during development but are not in the repo yet.

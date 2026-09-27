@@ -178,6 +178,7 @@
     border-radius:6px; padding:9px 14px; font-size:13px; cursor:pointer;
   }
   button.secondary:hover{ border-color:var(--accent); }
+  button.secondary:disabled{ opacity:0.5; cursor:default; }
   #status{ font-size:12px; color:var(--muted); min-height:16px; }
   #status.error{ color:#e06b6b; }
 
@@ -206,6 +207,8 @@
   <fieldset>
     <legend>Histórias</legend>
     <button class="secondary" style="width:100%;" onclick="newChat()">+ Nova história</button>
+    <button class="secondary" style="width:100%; margin-top:6px;" onclick="$('importInput').click()">Importar backup .json</button>
+    <input type="file" id="importInput" accept=".json,application/json" style="display:none;">
     <div id="chatList" style="margin-top:10px; display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto;"></div>
   </fieldset>
 
@@ -374,6 +377,9 @@ let history = [];            // {role:'user'|'assistant', content, provider, wor
 let chapterCount = 0;
 let lastAssistantEntry = null;
 let editingIndex = null;
+let generating = false;      // only one generation may run at a time
+let genChatId = null;        // chat the running generation belongs to
+let storageWarning = '';     // sticky: localStorage quota errors must stay visible
 
 const $ = id => document.getElementById(id);
 
@@ -399,7 +405,7 @@ function wordCount(str){
 
 function updateStats(){
   const total = history.filter(h=>h.role==='assistant').reduce((s,h)=>s+h.words,0);
-  const approxTokens = Math.round(total * 1.35);
+  const approxTokens = Math.round(total * 1.6); // Portuguese runs ~1.5-1.8 tokens/word
   $('wordStats').textContent = `${total} palavras geradas (~${approxTokens.toLocaleString('pt-PT')} tokens)`;
 }
 
@@ -417,6 +423,7 @@ function providerConfig(letter){
 }
 
 function setStatus(msg, isError){
+  if(!msg && storageWarning){ msg = storageWarning; isError = true; }
   const el = $('status');
   el.textContent = msg;
   el.className = isError ? 'error' : '';
@@ -441,9 +448,14 @@ function renderEntry(entry, idx){
   const meta = document.createElement('div');
   meta.className = 'meta';
   if(entry.role === 'user'){
-    meta.innerHTML = mode === 'author' ? 'Indicação' : 'Tu';
+    meta.textContent = mode === 'author' ? 'Indicação' : 'Tu';
   } else {
-    meta.innerHTML = `<span class="badge">${entry.provider}</span> ${entry.words} palavras${entry.finishReason ? ` · parou por: ${entry.finishReason}` : ''}`;
+    // provider/finishReason come from config, API responses and imported
+    // backups — never feed them to innerHTML.
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = entry.provider || '?';
+    meta.append(badge, document.createTextNode(` ${entry.words} palavras${entry.finishReason ? ` · parou por: ${entry.finishReason}` : ''}`));
   }
   wrap.appendChild(meta);
 
@@ -523,10 +535,9 @@ function saveEdit(idx, value){
 async function regenerate(idx){
   const entry = history[idx];
   if(!entry || entry.role !== 'assistant') return;
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
   const letter = $('activeProvider').value;
-  $('sendBtn').disabled = true;
-  $('stopBtn').style.display = 'inline-block';
-  abortController = new AbortController();
   try{
     const priorHistory = history.slice(0, idx);
     const messages = buildMessages(null, priorHistory);
@@ -534,34 +545,27 @@ async function regenerate(idx){
     // Re-locate by object identity instead of the original idx: the history
     // array may have been edited/deleted while this generation was in
     // flight, and writing to a stale idx corrupts the array with a hole.
-    const currentIdx = history.indexOf(entry);
+    // The user may also have switched stories, so look in the owning chat.
+    const hist = historyOf(chatId);
+    const currentIdx = hist ? hist.indexOf(entry) : -1;
     if(currentIdx === -1){
       setStatus('a história mudou entretanto — esta regeneração não foi aplicada.', true);
       return;
     }
-    history[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
-    if(currentIdx === history.length - 1) lastAssistantEntry = history[currentIdx];
-    rerenderAll();
-    updateStats();
+    hist[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
+    commitChat(chatId);
     setStatus('');
   }catch(err){
-    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+    // The old chapter is kept on abort/error: partial regenerations are discarded.
+    setStatus(err.name === 'AbortError' ? 'geração interrompida — o capítulo original foi mantido.' : err.message, err.name !== 'AbortError');
   }finally{
-    $('sendBtn').disabled = false;
-    $('stopBtn').style.display = 'none';
-    stopGenTimer();
-    abortController = null;
+    endGeneration();
   }
 }
 
 function deleteEntry(idx){
   if(!confirm('Apagar esta entrada da história?')) return;
-  const removed = history[idx];
   history.splice(idx, 1);
-  if(removed === lastAssistantEntry){
-    lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
-    $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
-  }
   editingIndex = null;
   rerenderAll();
   updateStats();
@@ -588,7 +592,11 @@ function renderLorebookList(){
     count.textContent = wordCount(f.content) + 'w';
     const del = document.createElement('button');
     del.textContent = '×';
-    del.onclick = () => { lorebookFiles.splice(i,1); renderLorebookList(); };
+    del.onclick = () => {
+      if(!confirm(`Remover "${f.name}" do lorebook?`)) return;
+      lorebookFiles.splice(i,1);
+      renderLorebookList();
+    };
     row.append(cb, name, count, del);
     list.appendChild(row);
   });
@@ -678,23 +686,33 @@ async function callProvider(letter, messages){
     };
   }
 
+  const signal = abortController ? abortController.signal : undefined;
   let res;
-  try{
-    res = await fetch(fetchUrl, {
-      method: 'POST',
-      headers: fetchHeaders,
-      body: JSON.stringify(body),
-      signal: abortController ? abortController.signal : undefined
-    });
-  }catch(err){
-    if(err.name === 'AbortError') throw err;
-    if(err instanceof TypeError){
-      throw new Error(`Erro de rede a contactar ${cfg.label}. Se não estás a usar o proxy local, a API pode estar a bloquear pedidos do browser (CORS) — preenche o campo "Proxy local".`);
+  for(let attempt = 0; ; attempt++){
+    try{
+      res = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: fetchHeaders,
+        body: JSON.stringify(body),
+        signal
+      });
+    }catch(err){
+      if(err.name === 'AbortError') throw err;
+      if(err instanceof TypeError){
+        if(attempt < MAX_RETRIES){
+          await retryBackoff(attempt, null, `erro de rede com ${cfg.label}`, signal);
+          continue;
+        }
+        throw new Error(`Erro de rede a contactar ${cfg.label}. Se não estás a usar o proxy local, a API pode estar a bloquear pedidos do browser (CORS) — preenche o campo "Proxy local".`);
+      }
+      throw err;
     }
-    throw err;
-  }
-  if(!res.ok){
+    if(res.ok) break;
     const text = await res.text().catch(()=> '');
+    if(attempt < MAX_RETRIES && RETRY_STATUSES.has(res.status)){
+      await retryBackoff(attempt, res.headers.get('Retry-After'), `${cfg.label} respondeu ${res.status}`, signal);
+      continue;
+    }
     throw new Error(`${cfg.label} respondeu ${res.status}: ${text.slice(0,300)}`);
   }
   const data = await res.json();
@@ -703,6 +721,36 @@ async function callProvider(letter, messages){
   const content = choice.message?.content ?? choice.text ?? '';
   const finishReason = choice.finish_reason || choice.stop_reason || 'stop';
   return {content, finishReason, providerLabel: cfg.label};
+}
+
+// Transient failures worth retrying (rate limits, gateway/overload errors).
+const RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
+const MAX_RETRIES = 3;
+
+function sleep(ms, signal){
+  return new Promise((resolve, reject) => {
+    const abortErr = () => new DOMException('Aborted', 'AbortError');
+    if(signal && signal.aborted) return reject(abortErr());
+    const onAbort = () => { clearTimeout(t); reject(abortErr()); };
+    const t = setTimeout(() => {
+      if(signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    if(signal) signal.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+async function retryBackoff(attempt, retryAfterHeader, reason, signal){
+  // Honour Retry-After (seconds) when given, else exponential backoff + jitter.
+  const retryAfter = parseFloat(retryAfterHeader);
+  const ms = retryAfter > 0
+    ? Math.min(retryAfter * 1000, 60000)
+    : 2000 * Math.pow(2, attempt) + Math.random() * 1000;
+  const prevLabel = genLabel;
+  genLabel = `${reason} — nova tentativa ${attempt + 1}/${MAX_RETRIES} em ${Math.round(ms / 1000)}s...`;
+  tickGenTimer();
+  try{ await sleep(ms, signal); }
+  finally{ genLabel = prevLabel; }
 }
 
 let abortController = null;
@@ -736,12 +784,20 @@ function stripClosingScaffold(text){
   // chapter's own closing scaffold back as "the last thing written" reads to
   // the model as "this chapter is finished" — it then starts a brand new
   // chapter (new <plan>, new header) instead of extending the current one.
-  const idx = text.indexOf('<ledger>');
+  // lastIndexOf: a <ledger> mentioned earlier in the prose must not truncate it.
+  const idx = text.lastIndexOf('<ledger>');
   if(idx === -1) return text;
   return text.slice(0, idx).trimEnd();
 }
 
-async function generateWithAutoContinue(letter, baseMessages){
+const CONTINUE_SAME_CHAPTER_PROMPT = 'Continue this SAME chapter from exactly where the text above stops. Do NOT start a new chapter — do not write a new <plan> or a new time/place header. Do not repeat or summarize what is already written; resume mid-sentence if necessary. Only produce a new <ledger> and <self-check> once this chapter is actually finished.';
+
+// opts.onProgress(full, providerLabel, finishReason) is called after every
+// completed round, so callers can persist partial chapters (abort/crash safe).
+// opts.baseWords counts text that already exists before `full` (used by
+// manualContinue so the word floor applies to the whole chapter).
+async function generateWithAutoContinue(letter, baseMessages, opts = {}){
+  const {onProgress, baseWords = 0} = opts;
   const autoOn = $('autoContinue').checked;
   const maxCont = parseInt($('maxContinues').value, 10) || 0;
   const floor = parseInt($('wordFloor').value, 10) || 0;
@@ -751,19 +807,29 @@ async function generateWithAutoContinue(letter, baseMessages){
   let messages = baseMessages.slice();
   let rounds = 0;
   let lastFinishReason = 'stop';
+  let joinParagraph = false; // previous round ended on its own (stop), not mid-sentence
 
   while(true){
     startGenTimer(rounds === 0 ? 'a gerar...' : `a continuar (${rounds}/${maxCont})...`);
     const {content, finishReason, providerLabel: pl} = await callProvider(letter, messages);
     providerLabel = pl;
-    full += content;
+    if(!content.trim()){
+      // Typically reasoning models spending the whole max_tokens on thinking.
+      // Feeding back an empty assistant turn would just loop.
+      if(!full.trim()) throw new Error(`${pl}: resposta vazia (finish_reason: ${finishReason}). Se o thinking está ativo, pode ter gasto todos os max_tokens.`);
+      break;
+    }
+    // After a "stop" round the text ends at a sentence/scene boundary (and was
+    // trimmed); without a separator the next round's first word gets fused on.
+    full += (joinParagraph && !/^\s/.test(content) ? '\n\n' : '') + content;
     lastFinishReason = finishReason;
 
     const cutOff = finishReason === 'length' || finishReason === 'max_tokens';
-    const underFloor = floor > 0 && wordCount(stripClosingScaffold(full)) < floor;
+    const underFloor = floor > 0 && baseWords + wordCount(stripClosingScaffold(full)) < floor;
     if((!cutOff && !underFloor) || !autoOn || rounds >= maxCont) break;
 
     rounds++;
+    joinParagraph = !cutOff;
     const strippedContent = cutOff ? content : stripClosingScaffold(content);
     const continuePrompt = cutOff
       ? 'Continue exactly where you left off, without repeating text already written and without summarizing. Resume mid-sentence if necessary.'
@@ -773,75 +839,152 @@ async function generateWithAutoContinue(letter, baseMessages){
       // scaffold tail we just stripped, so it isn't duplicated mid-chapter.
       full = full.slice(0, full.length - (content.length - strippedContent.length));
     }
+    if(onProgress) onProgress(full, providerLabel, 'parcial');
     messages = messages.concat([
       {role:'assistant', content: strippedContent},
       {role:'user', content: continuePrompt}
     ]);
   }
+  if(onProgress) onProgress(full, providerLabel, lastFinishReason);
   return {content: full, providerLabel, finishReason: lastFinishReason};
+}
+
+function beginGeneration(){
+  if(generating){
+    setStatus('já há uma geração em curso — espera ou carrega em "Parar".', true);
+    return false;
+  }
+  generating = true;
+  genChatId = currentChatId;
+  abortController = new AbortController();
+  $('sendBtn').disabled = true;
+  $('continueBtn').disabled = true;
+  $('stopBtn').style.display = 'inline-block';
+  return true;
+}
+
+function endGeneration(){
+  generating = false;
+  genChatId = null;
+  $('sendBtn').disabled = false;
+  $('continueBtn').disabled = false;
+  $('stopBtn').style.display = 'none';
+  stopGenTimer();
+  abortController = null;
+}
+
+// The history array of a chat. A generation must write into the chat it was
+// started from, even if the user switched stories while it was running.
+function historyOf(chatId){
+  if(chatId === currentChatId) return history;
+  return chats[chatId] ? chats[chatId].history : null;
+}
+
+// Persist (and, if visible, re-render) a chat after a generation changed it.
+function commitChat(chatId){
+  if(chatId === currentChatId){
+    // Don't re-render under an open editor: it would discard the user's edits.
+    if(editingIndex === null) rerenderAll();
+    else saveHistory();
+    updateStats();
+  } else if(chats[chatId]){
+    chats[chatId].updatedAt = Date.now();
+    persistChats();
+    renderChatList();
+  }
 }
 
 async function send(){
   const inputEl = $('input');
   const text = inputEl.value.trim();
   if(!text) return;
-
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
   const letter = $('activeProvider').value;
-  $('sendBtn').disabled = true;
-  $('stopBtn').style.display = 'inline-block';
-  abortController = new AbortController();
 
   const userEntry = {role:'user', content:text};
   history.push(userEntry);
   rerenderAll();
   inputEl.value = '';
 
+  let assistantEntry = null;
+  const onProgress = (full, providerLabel, finishReason) => {
+    const hist = historyOf(chatId);
+    if(!hist) return;
+    if(!assistantEntry){
+      assistantEntry = {role:'assistant', content:'', provider: providerLabel, words: 0};
+      hist.push(assistantEntry);
+    }
+    assistantEntry.content = full;
+    assistantEntry.words = wordCount(full);
+    assistantEntry.provider = providerLabel;
+    assistantEntry.finishReason = finishReason;
+    commitChat(chatId);
+  };
+
   try{
     const messages = buildMessages(null);
-    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
-    const words = wordCount(content);
-    const assistantEntry = {role:'assistant', content, provider: providerLabel, words, finishReason};
-    history.push(assistantEntry);
-    lastAssistantEntry = assistantEntry;
-    rerenderAll();
-    updateStats();
-    setStatus('');
-    $('continueBtn').style.display = 'inline-block';
+    await generateWithAutoContinue(letter, messages, {onProgress});
+    setStatus(chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}".`);
   }catch(err){
-    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+    const aborted = err.name === 'AbortError';
+    if(assistantEntry){
+      // Keep the rounds that already completed instead of throwing them away.
+      assistantEntry.finishReason = aborted ? 'interrompido' : 'erro';
+      commitChat(chatId);
+      setStatus(`${aborted ? 'geração interrompida' : err.message} — ${assistantEntry.words} palavras das rondas concluídas foram guardadas.`, !aborted);
+    } else {
+      // Nothing was generated: take the brief back out of the history (so a
+      // retry doesn't send it twice) and give it back to the composer.
+      const hist = historyOf(chatId);
+      const at = hist ? hist.indexOf(userEntry) : -1;
+      if(at !== -1){ hist.splice(at, 1); commitChat(chatId); }
+      if(chatId === currentChatId && !inputEl.value.trim()) inputEl.value = text;
+      setStatus(aborted ? 'geração interrompida.' : err.message, !aborted);
+    }
   }finally{
-    $('sendBtn').disabled = false;
-    $('stopBtn').style.display = 'none';
-    stopGenTimer();
-    abortController = null;
+    endGeneration();
   }
 }
 
 async function manualContinue(){
-  if(!lastAssistantEntry) return;
+  const entry = lastAssistantEntry;
+  const idx = entry ? history.indexOf(entry) : -1;
+  if(idx === -1) return;
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
   const letter = $('activeProvider').value;
-  $('sendBtn').disabled = true;
-  $('stopBtn').style.display = 'inline-block';
-  abortController = new AbortController();
+
+  // Same fix as the auto-continue floor path: feed the chapter back without
+  // its closing <ledger> scaffold, otherwise the model reads it as finished
+  // and starts a new chapter that gets glued into this one.
+  const original = entry.content;
+  const base = stripClosingScaffold(original);
+  const sep = base !== original ? '\n\n' : '';
+  const originalProvider = entry.provider;
   try{
-    const messages = buildMessages(null).concat([
-      {role:'user', content:'Continue exactly where you left off, without repeating text already written.'}
+    const messages = buildMessages(null, history.slice(0, idx)).concat([
+      {role:'assistant', content: base},
+      {role:'user', content: CONTINUE_SAME_CHAPTER_PROMPT}
     ]);
-    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
-    lastAssistantEntry.content += content;
-    lastAssistantEntry.words = wordCount(lastAssistantEntry.content);
-    lastAssistantEntry.finishReason = finishReason;
-    // re-render log fully to update the merged bubble
-    rerenderAll();
-    updateStats();
+    const onProgress = (full, providerLabel, finishReason) => {
+      entry.content = base + sep + full;
+      entry.words = wordCount(entry.content);
+      entry.finishReason = finishReason;
+      entry.provider = !originalProvider ? providerLabel
+        : originalProvider.split(' + ').includes(providerLabel) ? originalProvider
+        : `${originalProvider} + ${providerLabel}`;
+      commitChat(chatId);
+    };
+    await generateWithAutoContinue(letter, messages, {onProgress, baseWords: wordCount(base)});
     setStatus('');
   }catch(err){
-    setStatus(err.name === 'AbortError' ? 'geração interrompida.' : err.message, err.name !== 'AbortError');
+    const aborted = err.name === 'AbortError';
+    const kept = entry.content !== original ? ' — as rondas concluídas foram guardadas' : '';
+    if(kept){ entry.finishReason = aborted ? 'interrompido' : 'erro'; commitChat(chatId); }
+    setStatus((aborted ? 'geração interrompida' : err.message) + kept + '.', !aborted);
   }finally{
-    $('sendBtn').disabled = false;
-    $('stopBtn').style.display = 'none';
-    stopGenTimer();
-    abortController = null;
+    endGeneration();
   }
 }
 
@@ -849,6 +992,10 @@ function rerenderAllNoSave(){
   $('log').innerHTML = '';
   chapterCount = 0;
   history.forEach((h, i) => renderEntry(h, i));
+  // Always derive from the live array, so it can never point at an entry
+  // that regenerate/delete/clear has replaced.
+  lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
+  $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
 }
 
 function rerenderAll(){
@@ -872,8 +1019,12 @@ function persistChats(){
   try{
     localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
     localStorage.setItem(CURRENT_CHAT_KEY, currentChatId);
+    storageWarning = '';
   }catch(e){
-    setStatus('história longa demais para guardar automaticamente no browser — faz download regularmente.', true);
+    // Sticky: setStatus('') after a generation must not hide this, or the
+    // user keeps writing without realising nothing is being saved.
+    storageWarning = 'NÃO GUARDADO: o armazenamento do browser está cheio — faz Backup .json já.';
+    setStatus(storageWarning, true);
   }
 }
 
@@ -949,6 +1100,10 @@ function switchChat(id){
 }
 
 function deleteChat(id){
+  if(generating && id === genChatId){
+    setStatus('esta história está a gerar — para a geração antes de a apagar.', true);
+    return;
+  }
   if(!confirm('Apagar esta história permanentemente?')) return;
   delete chats[id];
   if(id === currentChatId){
@@ -985,6 +1140,10 @@ function loadChats(){
 }
 
 function clearStory(){
+  if(generating && currentChatId === genChatId){
+    setStatus('esta história está a gerar — para a geração antes de a limpar.', true);
+    return;
+  }
   if(!confirm('Limpar toda a história atual desta sessão?')) return;
   history = [];
   chapterCount = 0;
@@ -1017,11 +1176,16 @@ function copyStory(){
   setTimeout(()=>setStatus(''), 1500);
 }
 
+function fileBaseName(){
+  const title = chatTitleFor(chats[currentChatId] || {});
+  return title.replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').trim().replace(/\s+/g, ' ').slice(0, 60) || 'historia';
+}
+
 function downloadStory(){
   const blob = new Blob([compileStory()], {type:'text/plain;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'historia.txt';
+  a.download = fileBaseName() + '.txt';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -1037,16 +1201,49 @@ function downloadJSON(){
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'historia-backup.json';
+  a.download = fileBaseName() + '-backup.json';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+// Restores a Backup .json (as written by downloadJSON) into a NEW story slot —
+// never overwrites an existing one.
+$('importInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if(!file) return;
+  try{
+    const data = JSON.parse(await file.text());
+    const rawHistory = Array.isArray(data) ? data : data && data.history;
+    if(!Array.isArray(rawHistory)) throw new Error('o ficheiro não tem um campo "history".');
+    const imported = rawHistory
+      .filter(h => h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string')
+      .map(h => h.role === 'user'
+        ? {role: 'user', content: h.content}
+        : {role: 'assistant', content: h.content, provider: String(h.provider || 'importado'),
+           words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {})});
+    if(!imported.length) throw new Error('não contém entradas válidas.');
+    saveHistory();
+    const id = 'chat_' + Date.now();
+    const title = typeof data.title === 'string' && data.title.trim() ? data.title.trim().slice(0, 80) : null;
+    chats[id] = {title, mode: data.mode === 'author' ? 'author' : 'chat', history: imported, updatedAt: Date.now()};
+    loadChatIntoMemory(id);
+    persistChats();
+    renderChatList();
+    setStatus(`"${chatTitleFor(chats[id])}" importada (${imported.length} entradas).`);
+  }catch(err){
+    setStatus(`Não consegui importar "${file.name}": ${err.message}`, true);
+  }
+});
+
 // persist provider config + lore locally (not the chat history)
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','systemPrompt','maxContinues','wordFloor','proxyUrl','activeProvider'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','systemPrompt','autoContinue','maxContinues','wordFloor','proxyUrl','activeProvider'];
 function saveConfig(){
   const cfg = {};
-  for(const id of PERSIST_KEYS) cfg[id] = $(id).value;
+  for(const id of PERSIST_KEYS){
+    const el = $(id);
+    cfg[id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
   localStorage.setItem('dualApiWriterConfig', JSON.stringify(cfg));
 }
 function loadConfig(){
@@ -1054,12 +1251,23 @@ function loadConfig(){
   if(!raw) return;
   try{
     const cfg = JSON.parse(raw);
-    for(const id of PERSIST_KEYS) if(cfg[id] !== undefined) $(id).value = cfg[id];
+    for(const id of PERSIST_KEYS){
+      if(cfg[id] === undefined) continue;
+      const el = $(id);
+      if(el.type === 'checkbox') el.checked = !!cfg[id];
+      else el.value = cfg[id];
+    }
   }catch(e){}
 }
 PERSIST_KEYS.forEach(id => $(id).addEventListener('change', saveConfig));
 loadConfig();
 loadChats();
+
+window.addEventListener('beforeunload', (e) => {
+  if(!generating) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 $('input').addEventListener('keydown', (e)=>{
   if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){

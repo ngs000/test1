@@ -343,6 +343,11 @@
     <p class="hint" id="floorWarning" style="color:#e0a86b; display:none;"></p>
     <p class="hint">O piso força continuações mesmo quando o modelo decide parar sozinho (finish_reason "stop") antes de atingir esse número de palavras — é a causa mais comum de respostas curtas apesar de max_tokens alto. Ex.: 5000 para bater o mínimo do teu sistema de escrita.</p>
     <div class="checkline">
+      <input type="checkbox" id="failover" checked>
+      <label style="margin:0;">failover: se o provider escolhido falhar (depois das novas tentativas), usar o outro</label>
+    </div>
+    <p class="hint" id="failoverHint"></p>
+    <div class="checkline">
       <input type="checkbox" id="streaming" checked>
       <label style="margin:0;">streaming (mostra o texto a chegar; "Parar" guarda o que já chegou)</label>
     </div>
@@ -656,7 +661,7 @@ async function regenerate(idx){
   try{
     const priorHistory = history.slice(0, idx);
     const messages = buildMessages(null, priorHistory);
-    const {content, providerLabel, finishReason, floorNote} = await generateWithAutoContinue(letter, messages);
+    const {content, providerLabel, finishReason, floorNote, failoverNote} = await generateWithAutoContinue(letter, messages);
     // Re-locate by object identity instead of the original idx: the history
     // array may have been edited/deleted while this generation was in
     // flight, and writing to a stale idx corrupts the array with a hole.
@@ -670,7 +675,7 @@ async function regenerate(idx){
     hist[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
     commitChat(chatId);
     const staleSummary = (chats[chatId].summaryCovered || 0) > 0 ? ' O resumo pode estar desatualizado — usa "refazer do zero" se necessário.' : '';
-    setStatus((floorNote + staleSummary).trim(), !!floorNote);
+    setStatus([failoverNote, floorNote, staleSummary].join(' ').trim(), !!(floorNote || failoverNote));
   }catch(err){
     // The old chapter is kept on abort/error: partial regenerations are discarded.
     setStatus(err.name === 'AbortError' ? 'geração interrompida — o capítulo original foi mantido.' : err.message, err.name !== 'AbortError');
@@ -1327,6 +1332,37 @@ function stripClosingScaffold(text){
 
 const CONTINUE_SAME_CHAPTER_PROMPT = 'Continue this SAME chapter from exactly where the text above stops. Do NOT start a new chapter — do not write a new <plan> or a new time/place header. Do not repeat or summarize what is already written; resume mid-sentence if necessary. Only produce a new <ledger> and <self-check> once this chapter is actually finished.';
 
+function otherProvider(letter){ return letter === 'A' ? 'B' : 'A'; }
+
+function providerReady(letter){
+  const cfg = providerConfig(letter);
+  return !!(cfg.url && cfg.key && cfg.model);
+}
+
+// Runs run(letter); if it fails for any reason other than "Parar" and
+// failover is on, runs it once more on the other provider (if configured).
+// Returns {value, letter, note}; `letter` is the provider that succeeded.
+async function withFailover(letter, run){
+  try{
+    return {value: await run(letter), letter, note: ''};
+  }catch(err){
+    const other = otherProvider(letter);
+    if(err.name === 'AbortError' || !$('failover').checked || !providerReady(other)) throw err;
+    const failed = providerConfig(letter).label;
+    const next = providerConfig(other).label;
+    const reason = err.message.length > 140 ? err.message.slice(0, 140) + '…' : err.message;
+    startGenTimer(`${failed} falhou — a tentar ${next}...`);
+    let value;
+    try{
+      value = await run(other);
+    }catch(err2){
+      if(err2.name !== 'AbortError') err2.message = `${failed}: ${reason} · ${err2.message}`;
+      throw err2;
+    }
+    return {value, letter: other, note: `${failed} falhou (${reason}) — usado ${next}.`};
+  }
+}
+
 // opts.onProgress(full, providerLabel, finishReason) is called after every
 // completed round (and with the partial text on abort), so callers can
 // persist chapters as they grow.
@@ -1340,7 +1376,13 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
   const floor = parseInt($('wordFloor').value, 10) || 0;
 
   let full = '';
-  let providerLabel = providerConfig(letter).label;
+  const labels = [];      // providers that wrote part of this text, in order
+  const failoverNotes = [];
+  // Label for the entry: every provider used so far plus the one running now.
+  const labelNow = () => {
+    const l = providerConfig(letter).label;
+    return (labels.includes(l) ? labels : labels.concat(l)).join(' + ');
+  };
   let messages = baseMessages.slice();
   let rounds = 0;
   let lastFinishReason = 'stop';
@@ -1353,24 +1395,30 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
 
   while(true){
     startGenTimer(rounds === 0 ? 'a gerar...' : `a continuar (${rounds}/${maxCont})...`);
-    let result;
-    try{
-      result = await callProvider(letter, messages, {
-        onDelta: (t) => {
-          const shown = full + sepFor(t) + t;
-          genProgress.text = shown;
-          if(onStream) onStream(shown, providerLabel);
+    const runRound = async (l) => {
+      try{
+        return await callProvider(l, messages, {
+          onDelta: (t) => {
+            const shown = full + sepFor(t) + t;
+            genProgress.text = shown;
+            if(onStream) onStream(shown, labelNow());
+          }
+        });
+      }catch(err){
+        if(err.name === 'AbortError' && err.partialContent){
+          full += sepFor(err.partialContent) + err.partialContent;
+          if(onProgress) onProgress(full, labelNow(), 'interrompido');
         }
-      });
-    }catch(err){
-      if(err.name === 'AbortError' && err.partialContent){
-        full += sepFor(err.partialContent) + err.partialContent;
-        if(onProgress) onProgress(full, providerLabel, 'interrompido');
+        throw err;
       }
-      throw err;
-    }
-    const {content, finishReason, providerLabel: pl} = result;
-    providerLabel = pl;
+    };
+    // Failover is per round and sticky: later rounds stay on the provider
+    // that worked.
+    const attempt = await withFailover(letter, runRound);
+    letter = attempt.letter;
+    if(attempt.note) failoverNotes.push(attempt.note);
+    const {content, finishReason, providerLabel: pl} = attempt.value;
+    if(!labels.includes(pl)) labels.push(pl);
     if(!content.trim()){
       // Typically reasoning models spending the whole max_tokens on thinking.
       // Feeding back an empty assistant turn would just loop.
@@ -1397,12 +1445,13 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
       // scaffold tail we just stripped, so it isn't duplicated mid-chapter.
       full = full.slice(0, full.length - (content.length - strippedContent.length));
     }
-    if(onProgress) onProgress(full, providerLabel, 'parcial');
+    if(onProgress) onProgress(full, labelNow(), 'parcial');
     messages = messages.concat([
       {role:'assistant', content: strippedContent},
       {role:'user', content: continuePrompt}
     ]);
   }
+  const providerLabel = labelNow();
   if(onProgress) onProgress(full, providerLabel, lastFinishReason);
 
   // Never finish under the floor silently: say why the loop gave up.
@@ -1415,7 +1464,7 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
       : `esgotou as ${maxCont} continuações — aumenta "máx. continuações"`;
     floorNote = `abaixo do piso: ${total}/${floor} palavras (${why}).`;
   }
-  return {content: full, providerLabel, finishReason: lastFinishReason, floorNote};
+  return {content: full, providerLabel, finishReason: lastFinishReason, floorNote, failoverNote: failoverNotes.join(' ')};
 }
 
 function beginGeneration(chatId = currentChatId){
@@ -1512,10 +1561,10 @@ async function send(){
   let finalMsg = '', finalIsError = false, summarizeAfter = false;
   try{
     const messages = buildMessages(null);
-    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream});
-    const where = chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}". `;
-    finalMsg = (where + floorNote).trim();
-    finalIsError = !!floorNote;
+    const {floorNote, failoverNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream});
+    const where = chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}".`;
+    finalMsg = [where, failoverNote, floorNote].join(' ').trim();
+    finalIsError = !!(floorNote || failoverNote);
     summarizeAfter = $('autoSummary').checked && !!chats[chatId] && chats[chatId].mode === 'author';
   }catch(err){
     const aborted = err.name === 'AbortError';
@@ -1587,8 +1636,8 @@ async function manualContinue(){
       liveUpdate(chatId, entry);
       persistWhileStreaming(chatId);
     };
-    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream, baseWords: wordCount(base)});
-    setStatus(floorNote, !!floorNote);
+    const {floorNote, failoverNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream, baseWords: wordCount(base)});
+    setStatus([failoverNote, floorNote].join(' ').trim(), !!(floorNote || failoverNote));
   }catch(err){
     const aborted = err.name === 'AbortError';
     const kept = entry.content !== original ? ' — o texto já recebido foi guardado' : '';
@@ -1615,8 +1664,9 @@ async function summarizeStory(chatId = currentChatId, opts = {}){
   const chat = chats[chatId];
   if(!chat) return 'história não encontrada';
   if(!beginGeneration(chatId)) return 'já há uma geração em curso';
-  const letter = $('activeProvider').value;
+  let letter = $('activeProvider').value;
   let error = '';
+  const notes = [];
   try{
     const chapters = historyOf(chatId).filter(h => h.role === 'assistant' && h.content.trim());
     let covered = rebuild ? 0 : Math.min(chat.summaryCovered || 0, chapters.length);
@@ -1636,10 +1686,13 @@ async function summarizeStory(chatId = currentChatId, opts = {}){
       }
       startGenTimer(`a atualizar o resumo (capítulos ${covered + 1}–${covered + batch.length} de ${chapters.length})...`);
       const text = batch.map((c, i) => `--- Chapter ${covered + i + 1} ---\n${c.content}`).join('\n\n');
-      const {content} = await callProvider(letter, [
+      const attempt = await withFailover(letter, l => callProvider(l, [
         {role: 'system', content: SUMMARY_SYSTEM_PROMPT},
         {role: 'user', content: `CURRENT SUMMARY:\n${summary || '(none yet)'}\n\nNEW CHAPTERS TO FOLD IN:\n\n${text}\n\nReturn only the complete updated summary.`}
-      ]);
+      ]));
+      letter = attempt.letter;
+      if(attempt.note) notes.push(attempt.note);
+      const {content} = attempt.value;
       if(!content.trim()) throw new Error('o modelo devolveu um resumo vazio.');
       summary = content.trim();
       covered += batch.length;
@@ -1648,7 +1701,7 @@ async function summarizeStory(chatId = currentChatId, opts = {}){
       if(chatId === currentChatId) $('storySummary').value = summary;
       persistChats(chatId);
     }
-    if(!quiet) setStatus('resumo atualizado.');
+    if(!quiet) setStatus(('resumo atualizado. ' + notes.join(' ')).trim(), notes.length > 0);
   }catch(err){
     const aborted = err.name === 'AbortError';
     error = aborted ? 'interrompido' : err.message;
@@ -2090,7 +2143,7 @@ $('importInput').addEventListener('change', async (e) => {
 
 // Global settings (providers, generation). The system prompt, summary and
 // lore selection are per story and live in the story itself.
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
 const KEY_IDS = ['pA-key', 'pB-key'];
 const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
 
@@ -2138,6 +2191,23 @@ function updateFloorWarning(){
   $('floorWarning').style.display = msg ? 'block' : 'none';
 }
 ['wordFloor', 'maxContinues', 'autoContinue'].forEach(id => $(id).addEventListener('input', updateFloorWarning));
+
+// Failover needs the *other* provider fully configured; say so instead of
+// silently doing nothing.
+function updateFailoverHint(){
+  const letter = $('activeProvider').value;
+  const other = otherProvider(letter);
+  let msg = '';
+  if($('failover').checked && !providerReady(other)){
+    msg = `Sem efeito: o Provider ${other} não tem URL, modelo e chave preenchidos.`;
+  } else if($('failover').checked){
+    msg = `Se ${providerConfig(letter).label} falhar, o mesmo pedido vai para ${providerConfig(other).label}. "Parar" nunca muda de provider.`;
+  }
+  $('failoverHint').textContent = msg;
+  $('failoverHint').style.color = $('failover').checked && !providerReady(other) ? '#e0a86b' : '';
+}
+['failover', 'activeProvider', 'pA-url', 'pA-model', 'pA-key', 'pA-label', 'pB-url', 'pB-model', 'pB-key', 'pB-label']
+  .forEach(id => { $(id).addEventListener('input', updateFailoverHint); $(id).addEventListener('change', updateFailoverHint); });
 $('autoContinue').addEventListener('change', updateFloorWarning);
 
 // Per-story text fields.
@@ -2171,6 +2241,7 @@ $('input').addEventListener('keydown', (e)=>{
 
 const legacyConfig = loadConfig();
 updateFloorWarning();
+updateFailoverHint();
 window.appReady = loadAll(typeof legacyConfig.systemPrompt === 'string' ? legacyConfig.systemPrompt : '');
 </script>
 </body>

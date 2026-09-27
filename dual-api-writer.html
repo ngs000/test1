@@ -302,7 +302,7 @@
     <legend>Geração</legend>
     <div class="checkline">
       <input type="checkbox" id="autoContinue" checked>
-      <label style="margin:0;">continuar automaticamente se cortar (finish_reason = length)</label>
+      <label style="margin:0;">continuar automaticamente (se cortar por max_tokens ou ficar abaixo do piso de palavras)</label>
     </div>
     <div class="row">
       <div>
@@ -314,6 +314,7 @@
         <input type="number" id="wordFloor" value="0" min="0" step="500">
       </div>
     </div>
+    <p class="hint" id="floorWarning" style="color:#e0a86b; display:none;"></p>
     <p class="hint">O piso força continuações mesmo quando o modelo decide parar sozinho (finish_reason "stop") antes de atingir esse número de palavras — é a causa mais comum de respostas curtas apesar de max_tokens alto. Ex.: 5000 para bater o mínimo do teu sistema de escrita.</p>
     <p class="hint">"Automático" não envia o campo de thinking/reasoning — o provider usa o próprio default. Cada continuação reenvia o histórico + o texto parcial e pede para retomar exatamente onde parou.</p>
     <label>Proxy local (opcional — resolve erros de CORS)</label>
@@ -541,7 +542,7 @@ async function regenerate(idx){
   try{
     const priorHistory = history.slice(0, idx);
     const messages = buildMessages(null, priorHistory);
-    const {content, providerLabel, finishReason} = await generateWithAutoContinue(letter, messages);
+    const {content, providerLabel, finishReason, floorNote} = await generateWithAutoContinue(letter, messages);
     // Re-locate by object identity instead of the original idx: the history
     // array may have been edited/deleted while this generation was in
     // flight, and writing to a stale idx corrupts the array with a hole.
@@ -554,7 +555,7 @@ async function regenerate(idx){
     }
     hist[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
     commitChat(chatId);
-    setStatus('');
+    setStatus(floorNote, !!floorNote);
   }catch(err){
     // The old chapter is kept on abort/error: partial regenerations are discarded.
     setStatus(err.name === 'AbortError' ? 'geração interrompida — o capítulo original foi mantido.' : err.message, err.name !== 'AbortError');
@@ -808,6 +809,7 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
   let rounds = 0;
   let lastFinishReason = 'stop';
   let joinParagraph = false; // previous round ended on its own (stop), not mid-sentence
+  let emptyStop = false;
 
   while(true){
     startGenTimer(rounds === 0 ? 'a gerar...' : `a continuar (${rounds}/${maxCont})...`);
@@ -817,6 +819,7 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
       // Typically reasoning models spending the whole max_tokens on thinking.
       // Feeding back an empty assistant turn would just loop.
       if(!full.trim()) throw new Error(`${pl}: resposta vazia (finish_reason: ${finishReason}). Se o thinking está ativo, pode ter gasto todos os max_tokens.`);
+      emptyStop = true;
       break;
     }
     // After a "stop" round the text ends at a sentence/scene boundary (and was
@@ -846,7 +849,18 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
     ]);
   }
   if(onProgress) onProgress(full, providerLabel, lastFinishReason);
-  return {content: full, providerLabel, finishReason: lastFinishReason};
+
+  // Never finish under the floor silently: say why the loop gave up.
+  let floorNote = '';
+  const total = baseWords + wordCount(stripClosingScaffold(full));
+  if(floor > 0 && total < floor){
+    const why = !autoOn ? 'a continuação automática está desligada'
+      : maxCont === 0 ? '"máx. continuações" está a 0 — aumenta-o para o piso funcionar'
+      : emptyStop ? 'o modelo devolveu uma continuação vazia'
+      : `esgotou as ${maxCont} continuações — aumenta "máx. continuações"`;
+    floorNote = `abaixo do piso: ${total}/${floor} palavras (${why}).`;
+  }
+  return {content: full, providerLabel, finishReason: lastFinishReason, floorNote};
 }
 
 function beginGeneration(){
@@ -924,8 +938,9 @@ async function send(){
 
   try{
     const messages = buildMessages(null);
-    await generateWithAutoContinue(letter, messages, {onProgress});
-    setStatus(chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}".`);
+    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress});
+    const where = chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}". `;
+    setStatus((where + floorNote).trim(), !!floorNote);
   }catch(err){
     const aborted = err.name === 'AbortError';
     if(assistantEntry){
@@ -976,8 +991,8 @@ async function manualContinue(){
         : `${originalProvider} + ${providerLabel}`;
       commitChat(chatId);
     };
-    await generateWithAutoContinue(letter, messages, {onProgress, baseWords: wordCount(base)});
-    setStatus('');
+    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, baseWords: wordCount(base)});
+    setStatus(floorNote, !!floorNote);
   }catch(err){
     const aborted = err.name === 'AbortError';
     const kept = entry.content !== original ? ' — as rondas concluídas foram guardadas' : '';
@@ -1261,6 +1276,20 @@ function loadConfig(){
 }
 PERSIST_KEYS.forEach(id => $(id).addEventListener('change', saveConfig));
 loadConfig();
+
+// The word floor only works through continuations; flag settings that disable it.
+function updateFloorWarning(){
+  const floor = parseInt($('wordFloor').value, 10) || 0;
+  const maxCont = parseInt($('maxContinues').value, 10) || 0;
+  let msg = '';
+  if(floor > 0 && !$('autoContinue').checked) msg = 'O piso não tem efeito: a continuação automática está desligada.';
+  else if(floor > 0 && maxCont === 0) msg = 'O piso não tem efeito com "máx. continuações" a 0 — cada continuação é um pedido extra; usa pelo menos 3–6.';
+  $('floorWarning').textContent = msg;
+  $('floorWarning').style.display = msg ? 'block' : 'none';
+}
+['wordFloor', 'maxContinues', 'autoContinue'].forEach(id => $(id).addEventListener('input', updateFloorWarning));
+$('autoContinue').addEventListener('change', updateFloorWarning);
+updateFloorWarning();
 loadChats();
 
 window.addEventListener('beforeunload', (e) => {

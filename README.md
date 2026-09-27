@@ -50,6 +50,12 @@ Then, in the sidebar:
 - The outline stays with its brief and is also used by regenerar, variantes and Continuar; it is never sent with other chapters.
 - **alternar providers entre continuações**: continuation rounds alternate between the two APIs, to break repetition loops in very long chapters.
 
+**Prose quality (per story)**
+- **Frases proibidas**: one phrase per line (or `/regex/`); matched whole-word, ignoring case and spacing. Sent to the model as banned (optional) and **highlighted** in the chapters, with a ⚠ count next to each chapter. **inserir lista sugerida** adds a starter list of common PT/EN clichés.
+- **Ponto de vista / tempo verbal**: a narrative lock (e.g. 3rd person limited, past) added to every request.
+- **análise** per chapter: banned phrases, the most repeated 3–5-word expressions, em-dash and ellipsis rates (flagged when high); **rever para corrigir** opens "rever" with an instruction listing exactly those problems.
+- **analisar a história toda**: problems per chapter and verbal tics that recur across several chapters.
+
 **Variants**
 - **nova variante** writes another version of a chapter from the same brief and context; **variante com <other provider>** does it with the other API, to compare them. Flip with **‹ 2/3 ›** next to the word count.
 - The shown variant *is* the chapter (context, export, summary). Edits, revisions and "Continuar" apply to the shown variant and are kept when you flip.
@@ -91,7 +97,7 @@ Implemented from the audit: all listed bugs (B1–B21), the context manager (F1)
 2. ~~First-class chapters (F7)~~ — done.
 3. ~~Variants / swipes (F13)~~ — done (including "variant with the other provider" for comparing).
 4. ~~More dual-API modes (rest of F4)~~ — done: outline → prose pipeline, alternating providers between continuation rounds (compare mode is covered by variants).
-5. **Prose tooling (F9)** — banned-phrase list with highlighter, repetition detector, POV/tense reminders.
+5. ~~Prose tooling (F9)~~ — done.
 6. **Continuity tracker (F8)** — character sheets injected when a character is mentioned, timeline.
 7. **Exports (F11)** — Markdown with headings, EPUB, DOCX.
 8. **Smaller items** — lore token budget cap; option to fail over immediately instead of retrying first; word floor only in Author mode; search & replace; model list from `/models`; request/cost log (F14–F17).

@@ -264,6 +264,15 @@
   .beats{ margin-top:8px; border:1px solid #8fb3e066; border-radius:8px; padding:8px 10px; background:#12101a; }
   .beats .rev-head{ font-size:11.5px; color:#8fb3e0; margin-bottom:6px; }
   .beats textarea{ min-height:150px; font-size:12.5px; line-height:1.5; resize:vertical; }
+  .bubble mark.slop{ background:#e0a86b33; color:inherit; border-bottom:2px solid #e0a86b; border-radius:2px; padding:0 1px; }
+  .slop-badge{ margin-left:6px; color:#e0a86b; cursor:pointer; font-size:11px; border:1px solid #e0a86b66; border-radius:4px; padding:0 5px; }
+  .analysis{ margin-top:10px; border:1px solid #e0a86b66; border-radius:8px; padding:10px 12px; background:#12101a; font-size:12.5px; line-height:1.55; }
+  .analysis .rev-head{ font-size:11.5px; color:#e0a86b; margin-bottom:6px; }
+  .analysis .a-sec{ margin-top:6px; }
+  .analysis .a-sec b{ font-weight:600; color:var(--text); }
+  .analysis .a-item{ color:var(--muted); }
+  .analysis .warn{ color:#e0a86b; }
+  #proseReport{ white-space:pre-line; }
   /* With more controls, let bars wrap as rows instead of squeezing labels onto two lines. */
   #topbar{ flex-wrap:wrap; row-gap:8px; }
   #topbar button, .mode-toggle button, #composer .bar button{ white-space:nowrap; }
@@ -466,6 +475,41 @@
   </fieldset>
 
   <fieldset>
+    <legend>Qualidade da prosa (desta história)</legend>
+    <div class="row">
+      <div>
+        <label>ponto de vista</label>
+        <select id="storyPov">
+          <option value="">livre</option>
+          <option value="first">1.ª pessoa</option>
+          <option value="third-limited">3.ª pessoa limitada</option>
+          <option value="third-omniscient">3.ª pessoa omnisciente</option>
+        </select>
+      </div>
+      <div>
+        <label>tempo verbal</label>
+        <select id="storyTense">
+          <option value="">livre</option>
+          <option value="past">passado</option>
+          <option value="present">presente</option>
+        </select>
+      </div>
+    </div>
+    <label>Frases proibidas (uma por linha; <code>/regex/</code> também serve)</label>
+    <textarea id="bannedPhrases" class="lore" placeholder="um arrepio percorreu-lhe a espinha&#10;soltou um suspiro que não sabia que estava a suster&#10;..."></textarea>
+    <div class="checkline">
+      <input type="checkbox" id="bannedInPrompt" checked>
+      <label style="margin:0;">enviar esta lista ao modelo como proibida</label>
+    </div>
+    <div class="mini-actions">
+      <button onclick="insertSuggestedBanned()">inserir lista sugerida</button>
+      <button onclick="analyzeStory()">analisar a história toda</button>
+    </div>
+    <p class="hint">As frases proibidas ficam sublinhadas nos capítulos (⚠ ao lado da contagem de palavras). "análise" em cada capítulo mostra também repetições e o uso de travessões e reticências.</p>
+    <div class="hint" id="proseReport"></div>
+  </fieldset>
+
+  <fieldset>
     <legend>Lorebook</legend>
     <label>Adicionar ficheiros (.md, .txt, .json de worldbook do SillyTavern)</label>
     <input type="file" id="lorebookInput" multiple accept=".md,.markdown,.txt,.json">
@@ -525,6 +569,7 @@ let revisingEntry = null;    // entry whose "rever" box is open
 let versionsOpenEntry = null; // entry whose version list is open
 let lastSelection = null;    // {entry, start, end} — last text selection inside a chapter
 let genUserEntry = null;     // brief whose chapter is being generated right now
+let analysisOpenEntry = null; // chapter whose prose analysis is open
 let generating = false;      // only one generation may run at a time
 let genChatId = null;        // chat the running generation belongs to
 let genProgress = null;      // {baseWords, floor, text} for the live word counter
@@ -642,6 +687,15 @@ function renderEntry(entry, idx){
     metaNode = document.createTextNode(metaText(entry));
     meta.append(badge, metaNode);
     if(entry.variants && entry.variants.length > 1) meta.appendChild(variantNav(entry));
+    const hits = bannedHits(entry.content);
+    if(hits.total){
+      const badge = document.createElement('span');
+      badge.className = 'slop-badge';
+      badge.title = 'frases proibidas neste capítulo — clica para a análise';
+      badge.textContent = `⚠ ${hits.total}`;
+      badge.onclick = () => { analysisOpenEntry = analysisOpenEntry === entry ? null : entry; rerenderAllNoSave(); };
+      meta.appendChild(badge);
+    }
   }
   wrap.appendChild(meta);
 
@@ -677,7 +731,8 @@ function renderEntry(entry, idx){
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  bubble.textContent = entry.content;
+  if(entry.role === 'assistant') renderHighlighted(bubble, entry.content);
+  else bubble.textContent = entry.content;
   wrap.appendChild(bubble);
   const els = {bubble, metaText: metaNode, pendingText: null, wrap, divider};
   entryEls.set(entry, els);
@@ -744,6 +799,11 @@ function renderEntry(entry, idx){
       delVar.onclick = () => deleteVariant(entry);
       actions.appendChild(delVar);
     }
+    const anBtn = document.createElement('button');
+    anBtn.textContent = 'análise';
+    anBtn.title = 'Frases proibidas, repetições, travessões e reticências neste capítulo';
+    anBtn.onclick = () => { analysisOpenEntry = analysisOpenEntry === entry ? null : entry; rerenderAllNoSave(); };
+    actions.appendChild(anBtn);
     const reviseBtn = document.createElement('button');
     reviseBtn.textContent = 'rever';
     reviseBtn.title = 'Rever o capítulo (ou o texto selecionado) com uma instrução';
@@ -775,6 +835,7 @@ function renderEntry(entry, idx){
     if(revisingEntry === entry) wrap.appendChild(reviseBox(entry));
     if(entry.pending) wrap.appendChild(revisionPanel(entry, els));
     if(versionsOpenEntry === entry && entry.versions && entry.versions.length) wrap.appendChild(versionsPanel(entry));
+    if(analysisOpenEntry === entry) wrap.appendChild(analysisPanel(entry));
   }
 
   log.appendChild(wrap);
@@ -1186,6 +1247,8 @@ function buildContext(hist){
 
   const systemParts = [];
   if(sys) systemParts.push(sys);
+  const proseRules = proseRulesText();
+  if(proseRules) systemParts.push(proseRules);
   if(loreText) systemParts.push('## Lorebook\n\n' + loreText);
   if(useSummary) systemParts.push('## Story so far (summary of the earlier parts, which are not included below)\n\n' + summary);
 
@@ -1206,7 +1269,7 @@ function buildContext(hist){
   return {
     messages,
     stats: {
-      system: estTokens(wordCount(sys)),
+      system: estTokens(wordCount(sys) + wordCount(proseRules)),
       lore: estTokens(wordCount(loreText)),
       loreHits: loreHits.map(h => h.title),
       summary: useSummary ? estTokens(wordCount(summary)) : 0,
@@ -2237,6 +2300,234 @@ async function manualContinue(){
   }
 }
 
+/* ---------------- prose quality ---------------- */
+
+const SUGGESTED_BANNED = [
+  'um arrepio percorreu-lhe a espinha', 'um arrepio percorreu-me a espinha',
+  'soltou um suspiro que não sabia que estava a suster', 'o coração falhou uma batida',
+  'o tempo pareceu parar', 'o mundo pareceu parar', 'um sorriso que não lhe chegava aos olhos',
+  'os olhos escureceram de desejo', 'algo mudou entre eles', 'o ar ficou carregado',
+  'cada fibra do seu ser', 'a respiração presa na garganta', 'um calor espalhou-se',
+  'uma mistura de', 'não conseguiu evitar sorrir', 'como se o mundo inteiro',
+  'shivers down her spine', "a breath she didn't know she was holding", 'eyes darkened with desire',
+  "a smile that didn't reach his eyes", 'something shifted between them', 'the world seemed to stop'
+];
+
+function insertSuggestedBanned(){
+  const ta = $('bannedPhrases');
+  const have = new Set(ta.value.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean));
+  const add = SUGGESTED_BANNED.filter(p => !have.has(p.toLowerCase()));
+  ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + add.join('\n');
+  onProseSettingsChange();
+  setStatus(`${add.length} frases acrescentadas à lista — edita à vontade.`);
+}
+
+function bannedLines(){
+  return $('bannedPhrases').value.split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+// Compiled once per list text: [{label, re}] with global regexes.
+let bannedCache = {key: null, list: []};
+function bannedPatterns(){
+  const key = $('bannedPhrases').value;
+  if(bannedCache.key === key) return bannedCache.list;
+  const list = [];
+  for(const line of bannedLines()){
+    const asRegex = line.match(/^\/(.+)\/([a-z]*)$/);
+    try{
+      if(asRegex){
+        list.push({label: line, re: new RegExp(asRegex[1], asRegex[2].replace(/g/g, '') + 'g')});
+      } else {
+        // Whole words, case-insensitive, any whitespace between words.
+        const body = line.split(/\s+/).map(escapeRegExp).join('\\s+');
+        list.push({label: line, re: new RegExp(`(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`, 'giu')});
+      }
+    }catch(e){ /* an invalid /regex/ line is ignored */ }
+  }
+  bannedCache = {key, list};
+  return list;
+}
+
+// {total, byPhrase: [[label, count]], ranges: [[start, end]]}
+function bannedHits(text){
+  const ranges = [];
+  const byPhrase = [];
+  for(const {label, re} of bannedPatterns()){
+    re.lastIndex = 0;
+    let m, n = 0;
+    while((m = re.exec(text))){
+      if(!m[0].length){ re.lastIndex++; continue; }
+      ranges.push([m.index, m.index + m[0].length]);
+      n++;
+    }
+    if(n) byPhrase.push([label, n]);
+  }
+  return {total: ranges.length, byPhrase: byPhrase.sort((a, b) => b[1] - a[1]), ranges};
+}
+
+// Sets the bubble's text with banned phrases wrapped in <mark>; text nodes
+// only (no HTML parsing), so selections/offsets keep working.
+function renderHighlighted(bubble, text){
+  const {ranges} = bannedHits(text);
+  if(!ranges.length){ bubble.textContent = text; return; }
+  ranges.sort((a, b) => a[0] - b[0]);
+  bubble.textContent = '';
+  let pos = 0;
+  for(const [a, b] of ranges){
+    if(a < pos) continue; // overlapping match
+    if(a > pos) bubble.appendChild(document.createTextNode(text.slice(pos, a)));
+    const mark = document.createElement('mark');
+    mark.className = 'slop';
+    mark.textContent = text.slice(a, b);
+    bubble.appendChild(mark);
+    pos = b;
+  }
+  if(pos < text.length) bubble.appendChild(document.createTextNode(text.slice(pos)));
+}
+
+function proseRulesText(){
+  const parts = [];
+  const pov = {first: 'first person', 'third-limited': 'third person limited', 'third-omniscient': 'third person omniscient'}[$('storyPov').value];
+  const tense = {past: 'past tense', present: 'present tense'}[$('storyTense').value];
+  if(pov || tense){
+    parts.push(`## Narrative lock\nWrite strictly in ${[pov, tense].filter(Boolean).join(', ')}. Never switch point of view or tense, not even for a paragraph.`);
+  }
+  const lines = bannedLines();
+  if(lines.length && $('bannedInPrompt').checked){
+    parts.push('## Banned phrases\nNever use these phrases or close paraphrases of them — find a fresh, specific image instead:\n' +
+      lines.map(l => '- ' + l).join('\n'));
+  }
+  return parts.join('\n\n');
+}
+
+const STOPWORDS = new Set(('a o as os de do da dos das e em no na nos nas num numa um uma uns umas que se por para pelo pela com sem não ao à aos às ' +
+  'é era foi ser estar está estava ele ela eles elas lhe lhes me te nos vos mas como mais já ou seu sua seus suas meu minha ' +
+  'isso isto aquilo este esta esse essa eu tu você nós sobre entre até quando onde muito tão ' +
+  'the a an of to and in on at it was is he she his her they them their i you that with for as but not had be').split(' '));
+
+// Word n-grams (3-5) used at least `min` times, most specific first.
+function repeatedPhrases(text, min = 3, top = 12){
+  const words = (text.toLowerCase().match(/[\p{L}\p{N}'’-]+/gu) || []);
+  const counts = new Map();
+  for(let n = 5; n >= 3; n--){
+    for(let i = 0; i + n <= words.length; i++){
+      const gram = words.slice(i, i + n);
+      if(gram.every(w => STOPWORDS.has(w))) continue;
+      const k = gram.join(' ');
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+  }
+  const hits = [...counts].filter(([, c]) => c >= min).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
+  // Drop shorter n-grams that are just part of a longer one with the same count.
+  const out = [];
+  for(const [k, c] of hits){
+    if(out.some(([k2, c2]) => c2 === c && k2.includes(k))) continue;
+    out.push([k, c]);
+    if(out.length >= top) break;
+  }
+  return out;
+}
+
+function punctuationStats(text){
+  const words = Math.max(1, wordCount(text));
+  const dashes = (text.match(/—|\s–\s/g) || []).length;
+  const ellipses = (text.match(/…|\.\.\./g) || []).length;
+  const per = n => Math.round(n / words * 1000 * 10) / 10;
+  // Rates are meaningless on a few lines of text: only flag real chapters.
+  const enough = words >= 300;
+  return {dashes, ellipses, dashRate: per(dashes), ellipsisRate: per(ellipses),
+          dashHigh: enough && per(dashes) > 8, ellipsisHigh: enough && per(ellipses) > 5};
+}
+
+function analysisPanel(entry){
+  const panel = document.createElement('div');
+  panel.className = 'analysis';
+  const head = document.createElement('div');
+  head.className = 'rev-head';
+  head.textContent = 'Análise da prosa deste capítulo';
+  panel.appendChild(head);
+  const sec = (title, items, empty) => {
+    const d = document.createElement('div');
+    d.className = 'a-sec';
+    const b = document.createElement('b');
+    b.textContent = title + ': ';
+    d.appendChild(b);
+    const t = document.createElement('span');
+    t.className = 'a-item';
+    t.textContent = items.length ? items.join(' · ') : empty;
+    d.appendChild(t);
+    panel.appendChild(d);
+  };
+  const hits = bannedHits(entry.content);
+  const reps = repeatedPhrases(entry.content);
+  const p = punctuationStats(entry.content);
+  sec('Frases proibidas', hits.byPhrase.map(([l, n]) => `“${l}” ×${n}`), bannedLines().length ? 'nenhuma' : 'lista vazia');
+  sec('Repetições (3+ vezes)', reps.map(([k, n]) => `“${k}” ×${n}`), 'nada de relevante');
+  const punct = document.createElement('div');
+  punct.className = 'a-sec';
+  const pb = document.createElement('b'); pb.textContent = 'Pontuação: ';
+  const d1 = document.createElement('span');
+  d1.className = p.dashHigh ? 'warn' : 'a-item';
+  d1.textContent = `travessões ${p.dashes} (${p.dashRate}/1000 palavras${p.dashHigh ? ' — excessivo' : ''})`;
+  const d2 = document.createElement('span');
+  d2.className = p.ellipsisHigh ? 'warn' : 'a-item';
+  d2.textContent = ` · reticências ${p.ellipses} (${p.ellipsisRate}/1000${p.ellipsisHigh ? ' — excessivo' : ''})`;
+  punct.append(pb, d1, d2);
+  panel.appendChild(punct);
+
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const problems = [];
+  if(hits.byPhrase.length) problems.push('Remove or replace these banned phrases with fresh, specific wording: ' + hits.byPhrase.map(([l]) => `"${l}"`).join(', ') + '.');
+  if(reps.length) problems.push('Vary these repeated expressions (keep at most one occurrence each where it matters): ' + reps.slice(0, 8).map(([k]) => `"${k}"`).join(', ') + '.');
+  if(p.dashHigh) problems.push('Cut the em-dashes to a minimum; use commas, full stops or restructured sentences.');
+  if(p.ellipsisHigh) problems.push('Cut most ellipses.');
+  if(problems.length){
+    const fix = document.createElement('button');
+    fix.textContent = 'rever para corrigir';
+    fix.title = 'Abre "rever" com uma instrução que lista estes problemas (podes editá-la)';
+    fix.onclick = () => {
+      entry.lastInstruction = problems.join(' ') + ' Change nothing else.';
+      analysisOpenEntry = null;
+      revisingEntry = entry;
+      rerenderAllNoSave();
+    };
+    bar.appendChild(fix);
+  }
+  const close = document.createElement('button');
+  close.textContent = 'fechar';
+  close.onclick = () => { analysisOpenEntry = null; rerenderAllNoSave(); };
+  bar.appendChild(close);
+  panel.appendChild(bar);
+  return panel;
+}
+
+// Story-wide report: banned hits and punctuation per chapter, and tics that
+// recur across several chapters.
+function analyzeStory(){
+  const chapters = history.filter(h => h.role === 'assistant' && h.content.trim());
+  if(!chapters.length){ $('proseReport').textContent = 'Ainda não há capítulos.'; return; }
+  const lines = [];
+  let totalHits = 0;
+  chapters.forEach((c, i) => {
+    const h = bannedHits(c.content);
+    const p = punctuationStats(c.content);
+    totalHits += h.total;
+    const flags = [h.total ? `⚠ ${h.total} proibidas` : '', p.dashHigh ? `travessões ${p.dashRate}/1000` : '', p.ellipsisHigh ? `reticências ${p.ellipsisRate}/1000` : ''].filter(Boolean);
+    if(flags.length) lines.push(`Cap. ${i + 1}${c.title ? ' (' + c.title + ')' : ''}: ${flags.join(', ')}`);
+  });
+  // Phrases repeated (2+ times) inside at least 3 different chapters.
+  const spread = new Map();
+  chapters.forEach(c => {
+    for(const [k] of repeatedPhrases(c.content, 2, 40)) spread.set(k, (spread.get(k) || 0) + 1);
+  });
+  const tics = [...spread].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  $('proseReport').textContent =
+    `${chapters.length} capítulos · ${totalHits} frases proibidas no total.\n` +
+    (lines.length ? lines.join('\n') : 'Nenhum capítulo com problemas assinalados.') +
+    (tics.length ? '\nTiques em vários capítulos: ' + tics.map(([k, n]) => `“${k}” (${n} caps.)`).join(' · ') : '');
+}
+
 /* ---------------- revisions & versions ---------------- */
 
 const MAX_VERSIONS = 10;
@@ -2938,7 +3229,11 @@ function newChatObject(from){
     title: null, mode: 'chat', history: [], updatedAt: Date.now(),
     systemPrompt: from ? (from.systemPrompt || '') : '',
     loreActive: from ? [...(from.loreActive || [])] : [],
-    summary: '', summaryCovered: 0
+    summary: '', summaryCovered: 0,
+    bannedPhrases: from ? (from.bannedPhrases || '') : '',
+    bannedInPrompt: from ? from.bannedInPrompt !== false : true,
+    pov: from ? (from.pov || '') : '',
+    tense: from ? (from.tense || '') : ''
   };
 }
 
@@ -2952,6 +3247,11 @@ function loadChatIntoMemory(id){
   applyModeUI(mode);
   $('systemPrompt').value = chat.systemPrompt || '';
   $('storySummary').value = chat.summary || '';
+  $('bannedPhrases').value = chat.bannedPhrases || '';
+  $('bannedInPrompt').checked = chat.bannedInPrompt !== false;
+  $('storyPov').value = chat.pov || '';
+  $('storyTense').value = chat.tense || '';
+  $('proseReport').textContent = '';
   loreOpenId = null;
   renderLorebookList();
   rerenderAllNoSave();
@@ -3006,6 +3306,10 @@ function migrateChatFields(chat, legacySystemPrompt, legacyLoreIds){
   if(!Array.isArray(chat.loreActive)) chat.loreActive = [...legacyLoreIds];
   if(typeof chat.summary !== 'string') chat.summary = '';
   if(typeof chat.summaryCovered !== 'number') chat.summaryCovered = 0;
+  if(typeof chat.bannedPhrases !== 'string') chat.bannedPhrases = '';
+  if(typeof chat.bannedInPrompt !== 'boolean') chat.bannedInPrompt = true;
+  if(typeof chat.pov !== 'string') chat.pov = '';
+  if(typeof chat.tense !== 'string') chat.tense = '';
   if(Array.isArray(chat.history)) chat.history.forEach(h => {
     if(!h) return;
     delete h.chapter;
@@ -3143,6 +3447,8 @@ function downloadJSON(){
     systemPrompt: $('systemPrompt').value,
     summary: $('storySummary').value,
     summaryCovered: chat.summaryCovered || 0,
+    bannedPhrases: chat.bannedPhrases || '', bannedInPrompt: chat.bannedInPrompt !== false,
+    pov: chat.pov || '', tense: chat.tense || '',
     history: history
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
@@ -3182,6 +3488,10 @@ $('importInput').addEventListener('change', async (e) => {
     if(typeof data.systemPrompt === 'string') chat.systemPrompt = data.systemPrompt;
     if(typeof data.summary === 'string') chat.summary = data.summary;
     if(typeof data.summaryCovered === 'number') chat.summaryCovered = data.summaryCovered;
+    if(typeof data.bannedPhrases === 'string') chat.bannedPhrases = data.bannedPhrases;
+    if(typeof data.bannedInPrompt === 'boolean') chat.bannedInPrompt = data.bannedInPrompt;
+    if(['', 'first', 'third-limited', 'third-omniscient'].includes(data.pov)) chat.pov = data.pov;
+    if(['', 'past', 'present'].includes(data.tense)) chat.tense = data.tense;
     chats[id] = chat;
     loadChatIntoMemory(id);
     persistChats(id);
@@ -3270,6 +3580,25 @@ $('systemPrompt').addEventListener('input', () => {
   persistChats();
   updateMeter();
 });
+// Prose settings: saved per story; highlights refresh shortly after typing stops.
+let proseTimer = null;
+function onProseSettingsChange(){
+  const chat = chats[currentChatId];
+  if(!chat) return;
+  chat.bannedPhrases = $('bannedPhrases').value;
+  chat.bannedInPrompt = $('bannedInPrompt').checked;
+  chat.pov = $('storyPov').value;
+  chat.tense = $('storyTense').value;
+  persistChats();
+  updateMeter();
+  clearTimeout(proseTimer);
+  proseTimer = setTimeout(() => { if(editingIndex === null) rerenderAllNoSave(); }, 600);
+}
+['bannedPhrases', 'bannedInPrompt', 'storyPov', 'storyTense'].forEach(id => {
+  $(id).addEventListener('input', onProseSettingsChange);
+  $(id).addEventListener('change', onProseSettingsChange);
+});
+
 $('storySummary').addEventListener('input', () => {
   if(!chats[currentChatId]) return;
   chats[currentChatId].summary = $('storySummary').value;

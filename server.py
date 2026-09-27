@@ -77,6 +77,9 @@ class CombinedHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._forbidden('Host not allowed')
+        if self.path == '/proxy':
+            # e.g. the model list (GET <base>/models)
+            return self._proxy('GET')
         super().do_GET()
 
     def do_HEAD(self):
@@ -88,7 +91,7 @@ class CombinedHandler(SimpleHTTPRequestHandler):
         if not self._host_ok() or not self._origin_ok():
             return self._forbidden('Origin not allowed')
         self.send_response(204)
-        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         # Listed explicitly: a "*" wildcard does not cover Authorization.
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Target-Url')
         self.send_header('Access-Control-Max-Age', '600')
@@ -99,13 +102,16 @@ class CombinedHandler(SimpleHTTPRequestHandler):
         if self.path != '/proxy':
             self._send_json(404, {'error': 'Not found'})
             return
+        self._proxy('POST')
+
+    def _proxy(self, method):
         if not self._host_ok() or not self._origin_ok():
             return self._forbidden('Origin not allowed')
 
         target_url = self.headers.get('X-Target-Url')
         auth = self.headers.get('Authorization', '')
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length)
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if method == 'POST' else None
 
         if not target_url:
             self._send_json(400, {'error': 'Missing X-Target-Url header'})
@@ -116,17 +122,14 @@ class CombinedHandler(SimpleHTTPRequestHandler):
             self._send_json(400, {'error': 'X-Target-Url must be an http(s) URL'})
             return
 
-        req = urllib.request.Request(
-            target_url,
-            data=body,
-            method='POST',
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': auth,
-                'Accept': self.headers.get('Accept') or '*/*',
-                'User-Agent': USER_AGENT,
-            },
-        )
+        headers = {
+            'Authorization': auth,
+            'Accept': self.headers.get('Accept') or '*/*',
+            'User-Agent': USER_AGENT,
+        }
+        if method == 'POST':
+            headers['Content-Type'] = 'application/json'
+        req = urllib.request.Request(target_url, data=body, method=method, headers=headers)
 
         try:
             resp = urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT)

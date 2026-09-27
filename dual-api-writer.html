@@ -359,7 +359,11 @@
     <label>Base URL (chat/completions)</label>
     <input type="text" id="pA-url" value="https://api.z.ai/api/paas/v4/chat/completions">
     <label>Modelo</label>
-    <input type="text" id="pA-model" value="glm-4.6">
+    <div style="display:flex; gap:6px;">
+      <input type="text" id="pA-model" value="glm-4.6" list="pA-models">
+      <button class="secondary" style="padding:6px 10px;" title="Carregar a lista de modelos do provider (/models)" onclick="loadModels('A')">↻</button>
+    </div>
+    <datalist id="pA-models"></datalist>
     <label>API Key</label>
     <input type="password" id="pA-key" placeholder="sk-...">
     <label class="toggle-key"><input type="checkbox" onchange="toggleKeyVisibility('pA-key', this)"> mostrar chave</label>
@@ -404,7 +408,11 @@
     <label>Base URL (chat/completions)</label>
     <input type="text" id="pB-url" value="https://nano-gpt.com/api/v1/chat/completions">
     <label>Modelo</label>
-    <input type="text" id="pB-model" value="deepseek-ai/DeepSeek-V3">
+    <div style="display:flex; gap:6px;">
+      <input type="text" id="pB-model" value="deepseek-ai/DeepSeek-V3" list="pB-models">
+      <button class="secondary" style="padding:6px 10px;" title="Carregar a lista de modelos do provider (/models)" onclick="loadModels('B')">↻</button>
+    </div>
+    <datalist id="pB-models"></datalist>
     <label>API Key</label>
     <input type="password" id="pB-key" placeholder="sk-...">
     <label class="toggle-key"><input type="checkbox" onchange="toggleKeyVisibility('pB-key', this)"> mostrar chave</label>
@@ -3959,6 +3967,40 @@ function clearStory(){
   saveHistory();
   updateSummaryInfo();
   updateMeter();
+}
+
+/* ---------------- model list (/models) ---------------- */
+
+function modelsUrl(chatUrl){
+  // .../v1/chat/completions -> .../v1/models
+  return chatUrl.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '') + '/models';
+}
+
+async function loadModels(letter){
+  const cfg = providerConfig(letter);
+  if(!cfg.url || !cfg.key){ setStatus(`Provider ${letter}: preenche o URL e a chave primeiro.`, true); return; }
+  const target = modelsUrl(cfg.url);
+  const proxyUrl = $('proxyUrl').value.trim();
+  const headers = {'Authorization': 'Bearer ' + cfg.key};
+  if(proxyUrl) headers['X-Target-Url'] = target;
+  setStatus(`a carregar modelos de ${cfg.label}...`);
+  try{
+    const res = await fetch(proxyUrl || target, {method: 'GET', headers});
+    const text = await res.text();
+    if(!res.ok) throw new Error(`${res.status}: ${text.slice(0, 200)}`);
+    const data = JSON.parse(text);
+    const list = Array.isArray(data) ? data : (data.data || data.models || []);
+    const ids = [...new Set(list.map(m => typeof m === 'string' ? m : (m.id || m.name)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    if(!ids.length) throw new Error('a resposta não trouxe modelos.');
+    const dl = $('p' + letter + '-models');
+    dl.innerHTML = '';
+    for(const id of ids){ const o = document.createElement('option'); o.value = id; dl.appendChild(o); }
+    // Offer the whole list in the field's dropdown (a filled field only shows matches).
+    setStatus(`${ids.length} modelos de ${cfg.label} — escolhe no campo "Modelo" (apaga o texto para ver todos).`);
+  }catch(err){
+    const hint = err instanceof TypeError ? ' (rede/CORS — com o proxy, confirma que o server.py está atualizado)' : '';
+    setStatus(`não consegui carregar os modelos de ${cfg.label}: ${err.message}${hint}`, true);
+  }
 }
 
 /* ---------------- search & replace ---------------- */

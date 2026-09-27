@@ -210,6 +210,22 @@
   .mini-actions button:disabled{ opacity:0.5; cursor:default; }
   textarea.extra-body{ min-height:54px; font-family:var(--mono); font-size:11.5px; resize:vertical; }
   #ctxBreakdown{ white-space:pre-line; }
+  .revise-box, .revision, .versions{
+    margin-top:10px; border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+    background:#12101a; font-family:var(--sans); font-size:13px;
+  }
+  .revise-box textarea{ min-height:70px; resize:vertical; }
+  .revise-box .scope{ display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 2px; font-size:12px; color:var(--muted); }
+  .revise-box .scope label{ display:flex; align-items:center; gap:5px; margin:0; font-size:12px; }
+  .revise-box .scope input{ width:auto; }
+  .revision{ border-color:var(--gold); }
+  .revision .rev-head, .versions .rev-head{ font-size:11.5px; color:var(--gold); margin-bottom:6px; }
+  .revision .rev-label{ font-size:11px; color:var(--muted); margin:8px 0 3px; }
+  .revision .rev-text{ font-family:var(--serif); font-size:15.5px; line-height:1.7; white-space:pre-wrap; color:#f1ece5; }
+  .revision .rev-text.old{ color:var(--muted); text-decoration:line-through; text-decoration-color:#e06b6b88; }
+  .versions .ver{ border-top:1px solid var(--border); padding:6px 0; display:flex; gap:10px; align-items:baseline; font-size:12px; }
+  .versions .ver:first-of-type{ border-top:none; }
+  .versions .ver .what{ flex:1; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -438,6 +454,9 @@ let history = [];            // {role:'user'|'assistant', content, provider, wor
 let chapterCount = 0;
 let lastAssistantEntry = null;
 let editingIndex = null;
+let revisingEntry = null;    // entry whose "rever" box is open
+let versionsOpenEntry = null; // entry whose version list is open
+let lastSelection = null;    // {entry, start, end} — last text selection inside a chapter
 let generating = false;      // only one generation may run at a time
 let genChatId = null;        // chat the running generation belongs to
 let genProgress = null;      // {baseWords, floor, text} for the live word counter
@@ -577,7 +596,20 @@ function renderEntry(entry, idx){
   bubble.className = 'bubble';
   bubble.textContent = entry.content;
   wrap.appendChild(bubble);
-  entryEls.set(entry, {bubble, metaText: metaNode});
+  const els = {bubble, metaText: metaNode, pendingText: null};
+  entryEls.set(entry, els);
+  if(entry.role === 'assistant'){
+    // Remember a selection made in this chapter, for "rever" on just that passage.
+    const capture = () => {
+      const off = selectionOffsets(bubble);
+      if(off) lastSelection = {entry, ...off};
+      else if(lastSelection && lastSelection.entry === entry) lastSelection = null;
+      if(revisingEntry === entry) updateReviseScope(entry);
+    };
+    bubble.addEventListener('mouseup', capture);
+    bubble.addEventListener('keyup', capture);
+    bubble.addEventListener('touchend', () => setTimeout(capture, 0));
+  }
 
   const actions = document.createElement('div');
   actions.className = 'entry-actions';
@@ -590,16 +622,37 @@ function renderEntry(entry, idx){
     regenBtn.textContent = 'regenerar';
     regenBtn.onclick = () => regenerate(idx);
     actions.appendChild(regenBtn);
+    const reviseBtn = document.createElement('button');
+    reviseBtn.textContent = 'rever';
+    reviseBtn.title = 'Rever o capítulo (ou o texto selecionado) com uma instrução';
+    reviseBtn.onclick = () => {
+      revisingEntry = revisingEntry === entry ? null : entry;
+      rerenderAllNoSave();
+      const ta = document.querySelector('.revise-box textarea');
+      if(ta) ta.focus({preventScroll: true});
+    };
+    actions.appendChild(reviseBtn);
     const copyBtn = document.createElement('button');
     copyBtn.textContent = 'copiar';
     copyBtn.onclick = () => navigator.clipboard.writeText(entry.content);
     actions.appendChild(copyBtn);
+    if(entry.versions && entry.versions.length){
+      const verBtn = document.createElement('button');
+      verBtn.textContent = `versões (${entry.versions.length})`;
+      verBtn.onclick = () => { versionsOpenEntry = versionsOpenEntry === entry ? null : entry; rerenderAllNoSave(); };
+      actions.appendChild(verBtn);
+    }
   }
   const delBtn = document.createElement('button');
   delBtn.textContent = 'apagar';
   delBtn.onclick = () => deleteEntry(idx);
   actions.appendChild(delBtn);
   wrap.appendChild(actions);
+  if(entry.role === 'assistant'){
+    if(revisingEntry === entry) wrap.appendChild(reviseBox(entry));
+    if(entry.pending) wrap.appendChild(revisionPanel(entry, els));
+    if(versionsOpenEntry === entry && entry.versions && entry.versions.length) wrap.appendChild(versionsPanel(entry));
+  }
 
   log.appendChild(wrap);
   log.scrollTop = log.scrollHeight;
@@ -628,10 +681,12 @@ function liveUpdate(chatId, entry){
     const log = $('log');
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
     for(const [e, cid] of liveQueue){
-      e.words = wordCount(e.content);
+      if(!e.pending) e.words = wordCount(e.content);
       if(cid !== currentChatId || editingIndex !== null) continue;
       const els = entryEls.get(e);
-      if(els && els.bubble.isConnected){
+      if(e.pending && els && els.pendingText && els.pendingText.isConnected){
+        els.pendingText.textContent = e.pending.content;
+      } else if(!e.pending && els && els.bubble.isConnected){
         els.bubble.textContent = e.content;
         if(els.metaText) els.metaText.textContent = metaText(e);
       } else {
@@ -672,7 +727,10 @@ async function regenerate(idx){
       setStatus('a história mudou entretanto — esta regeneração não foi aplicada.', true);
       return;
     }
-    hist[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
+    hist[currentIdx] = {
+      role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason,
+      versions: pushVersion(entry.versions, entry, 'antes de regenerar')
+    };
     commitChat(chatId);
     const staleSummary = (chats[chatId].summaryCovered || 0) > 0 ? ' O resumo pode estar desatualizado — usa "refazer do zero" se necessário.' : '';
     setStatus([failoverNote, floorNote, staleSummary].join(' ').trim(), !!(floorNote || failoverNote));
@@ -1373,7 +1431,7 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
   const {onProgress, onStream, baseWords = 0} = opts;
   const autoOn = $('autoContinue').checked;
   const maxCont = parseInt($('maxContinues').value, 10) || 0;
-  const floor = parseInt($('wordFloor').value, 10) || 0;
+  const floor = opts.floor ?? (parseInt($('wordFloor').value, 10) || 0);
 
   let full = '';
   const labels = [];      // providers that wrote part of this text, in order
@@ -1652,6 +1710,306 @@ async function manualContinue(){
   }
 }
 
+/* ---------------- revisions & versions ---------------- */
+
+const MAX_VERSIONS = 10;
+
+function snapshot(entry, note){
+  return {content: entry.content, provider: entry.provider || '', words: entry.words || wordCount(entry.content),
+          finishReason: entry.finishReason || '', note: note || '', savedAt: Date.now()};
+}
+
+// Returns a new versions array with `entry`'s current text appended (oldest dropped past the cap).
+function pushVersion(versions, entry, note){
+  return [...(versions || []), snapshot(entry, note)].slice(-MAX_VERSIONS);
+}
+
+function sanitizeVersions(list){
+  return list
+    .filter(v => v && typeof v.content === 'string')
+    .map(v => ({content: v.content, provider: String(v.provider || ''), words: wordCount(v.content),
+                finishReason: String(v.finishReason || ''), note: String(v.note || ''), savedAt: Number(v.savedAt) || 0}))
+    .slice(-MAX_VERSIONS);
+}
+
+// Character offsets of the current selection inside `container` (whose text
+// is exactly entry.content), or null.
+function selectionOffsets(container){
+  const sel = window.getSelection();
+  if(!sel || !sel.rangeCount || sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  if(!container.contains(r.startContainer) || !container.contains(r.endContainer)) return null;
+  const pre = document.createRange();
+  pre.selectNodeContents(container);
+  pre.setEnd(r.startContainer, r.startOffset);
+  const start = pre.toString().length;
+  const end = start + r.toString().length;
+  return end > start ? {start, end} : null;
+}
+
+function selectionFor(entry){
+  if(!lastSelection || lastSelection.entry !== entry) return null;
+  const {start, end} = lastSelection;
+  if(end > entry.content.length || !entry.content.slice(start, end).trim()) return null;
+  return {start, end, text: entry.content.slice(start, end)};
+}
+
+function updateReviseScope(entry){
+  const box = document.querySelector('.revise-box');
+  if(!box) return;
+  const sel = selectionFor(entry);
+  const selRadio = box.querySelector('input[value="selection"]');
+  const selLabel = box.querySelector('.sel-label');
+  selRadio.disabled = !sel;
+  selLabel.textContent = sel ? `só o texto selecionado (${wordCount(sel.text)} palavras)` : 'só o texto selecionado (seleciona uma passagem no capítulo)';
+  if(sel) selRadio.checked = true;
+  else box.querySelector('input[value="chapter"]').checked = true;
+}
+
+function reviseBox(entry){
+  const box = document.createElement('div');
+  box.className = 'revise-box';
+  const ta = document.createElement('textarea');
+  ta.placeholder = 'O que mudar? Ex.: escurece a cena da confissão, corta o flashback, expande o banquete, mais tensão no diálogo final...';
+  ta.value = entry.lastInstruction || '';
+  const scope = document.createElement('div');
+  scope.className = 'scope';
+  const mk = (value, text, cls) => {
+    const l = document.createElement('label');
+    const r = document.createElement('input');
+    r.type = 'radio'; r.name = 'revise-scope'; r.value = value;
+    const t = document.createElement('span');
+    t.textContent = text;
+    if(cls) t.className = cls;
+    l.append(r, t);
+    return l;
+  };
+  scope.append(mk('chapter', 'capítulo inteiro'), mk('selection', '', 'sel-label'));
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const go = document.createElement('button');
+  go.textContent = 'rever';
+  const run = () => {
+    const instruction = ta.value.trim();
+    if(!instruction){ ta.focus(); return; }
+    const useSel = box.querySelector('input[value="selection"]').checked;
+    reviseEntry(entry, instruction, useSel ? selectionFor(entry) : null);
+  };
+  go.onclick = run;
+  ta.addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); run(); } });
+  const cancel = document.createElement('button');
+  cancel.textContent = 'fechar';
+  cancel.onclick = () => { revisingEntry = null; rerenderAllNoSave(); };
+  bar.append(go, cancel);
+  const hint = document.createElement('div');
+  hint.className = 'hint';
+  hint.textContent = 'O original só muda quando aceitares a revisão. Dica: seleciona uma passagem no capítulo antes de abrir isto para rever só essa parte.';
+  box.append(ta, scope, bar, hint);
+  // Fill in the selection radio once the box is in the DOM.
+  setTimeout(() => updateReviseScope(entry), 0);
+  return box;
+}
+
+function revisionPanel(entry, els){
+  const p = entry.pending;
+  const panel = document.createElement('div');
+  panel.className = 'revision';
+  const head = document.createElement('div');
+  head.className = 'rev-head';
+  const state = p.status === 'a gerar' ? ' — a gerar...' : p.status === 'interrompido' ? ' — interrompida' : '';
+  head.textContent = `Revisão (${p.scope === 'selection' ? 'passagem selecionada' : 'capítulo inteiro'}, ${p.provider || '?'})${state}: “${p.instruction}”`;
+  panel.appendChild(head);
+  if(p.scope === 'selection'){
+    const l1 = document.createElement('div'); l1.className = 'rev-label'; l1.textContent = 'Original:';
+    const t1 = document.createElement('div'); t1.className = 'rev-text old'; t1.textContent = p.original;
+    panel.append(l1, t1);
+  }
+  const l2 = document.createElement('div'); l2.className = 'rev-label';
+  l2.textContent = p.scope === 'selection' ? 'Revisto:' : `Versão revista (${wordCount(p.content)} palavras; original: ${entry.words}):`;
+  const t2 = document.createElement('div'); t2.className = 'rev-text'; t2.textContent = p.content;
+  els.pendingText = t2;
+  panel.append(l2, t2);
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  if(p.status !== 'a gerar'){
+    const accept = document.createElement('button'); accept.textContent = 'aceitar';
+    accept.onclick = () => acceptRevision(entry);
+    const discard = document.createElement('button'); discard.textContent = 'descartar';
+    discard.onclick = () => discardRevision(entry);
+    const redo = document.createElement('button'); redo.textContent = 'refazer revisão';
+    redo.onclick = () => {
+      const sel = p.scope === 'selection' ? locatePassage(entry, p) : null;
+      if(p.scope === 'selection' && !sel){ setStatus('a passagem original já não existe no capítulo.', true); return; }
+      reviseEntry(entry, p.instruction, sel);
+    };
+    bar.append(accept, discard, redo);
+  }
+  panel.appendChild(bar);
+  return panel;
+}
+
+function versionsPanel(entry){
+  const panel = document.createElement('div');
+  panel.className = 'versions';
+  const head = document.createElement('div');
+  head.className = 'rev-head';
+  head.textContent = 'Versões anteriores (restaurar guarda a atual como versão):';
+  panel.appendChild(head);
+  [...entry.versions].reverse().forEach((v) => {
+    const row = document.createElement('div');
+    row.className = 'ver';
+    const what = document.createElement('span');
+    what.className = 'what';
+    const when = v.savedAt ? new Date(v.savedAt).toLocaleString('pt-PT', {dateStyle: 'short', timeStyle: 'short'}) : '';
+    what.textContent = `${when} · ${v.words} palavras · ${v.provider || '?'}${v.note ? ' · ' + v.note : ''} — “${v.content.trim().length > 90 ? v.content.trim().slice(0, 90) + '…' : v.content.trim()}”`;
+    const bar = document.createElement('span');
+    bar.className = 'mini-actions';
+    bar.style.marginTop = '0';
+    const view = document.createElement('button'); view.textContent = 'copiar';
+    view.onclick = () => navigator.clipboard.writeText(v.content);
+    const restore = document.createElement('button'); restore.textContent = 'restaurar';
+    restore.onclick = () => restoreVersion(entry, v);
+    bar.append(view, restore);
+    row.append(what, bar);
+    panel.appendChild(row);
+  });
+  return panel;
+}
+
+// Where the revised passage sits now: at its recorded offsets, or — if the
+// chapter was edited meanwhile — wherever the original passage occurs once.
+function locatePassage(entry, p){
+  if(entry.content.slice(p.start, p.end) === p.original) return {start: p.start, end: p.end, text: p.original};
+  const i = entry.content.indexOf(p.original);
+  if(i === -1 || entry.content.indexOf(p.original, i + 1) !== -1) return null;
+  return {start: i, end: i + p.original.length, text: p.original};
+}
+
+const REVISE_CHAPTER_PROMPT = (instruction) =>
+  `Revise the chapter above according to this instruction:\n\n${instruction}\n\n` +
+  'Apply the instruction fully, but keep everything it does not touch as close to the original as possible (plot, facts, names, POV, tense, style, scaffold blocks such as <plan> or <ledger>). ' +
+  'Output the complete revised chapter from its first line to its last — no commentary, no notes, no summary of changes.';
+
+const REVISE_PASSAGE_PROMPT = (instruction, passage) =>
+  `Rewrite ONLY the following passage of the chapter above, according to this instruction:\n\n${instruction}\n\n` +
+  'The result will replace the passage exactly where it stands, so it must connect seamlessly with the text right before and after it, and keep POV, tense and style. ' +
+  'Output only the rewritten passage — no quotes around it, no commentary, nothing from outside the passage.\n\n' +
+  `PASSAGE:\n<<<\n${passage}\n>>>`;
+
+async function reviseEntry(entry, instruction, sel){
+  const idx = history.indexOf(entry);
+  if(idx === -1) return;
+  if(entry.pending && entry.pending.status !== 'a gerar' &&
+     !confirm('Já há uma revisão por aceitar neste capítulo. Substituí-la?')) return;
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
+  const letter = $('activeProvider').value;
+  entry.lastInstruction = instruction;
+  revisingEntry = null;
+  const scope = sel ? 'selection' : 'chapter';
+  entry.pending = {
+    scope, instruction, content: '', provider: providerConfig(letter).label, status: 'a gerar',
+    ...(sel ? {start: sel.start, end: sel.end, original: sel.text} : {})
+  };
+  commitChat(chatId);
+  try{
+    const messages = buildMessages(null, history.slice(0, idx)).concat([
+      {role: 'assistant', content: entry.content},
+      {role: 'user', content: sel ? REVISE_PASSAGE_PROMPT(instruction, sel.text) : REVISE_CHAPTER_PROMPT(instruction)}
+    ]);
+    const onStream = (textSoFar, providerLabel) => {
+      if(!entry.pending) return;
+      entry.pending.content = textSoFar;
+      entry.pending.provider = providerLabel;
+      liveUpdate(chatId, entry);
+      persistWhileStreaming(chatId);
+    };
+    const onProgress = (full, providerLabel, finishReason) => {
+      if(!entry.pending) return;
+      entry.pending.content = full;
+      entry.pending.provider = providerLabel;
+      entry.pending.status = finishReason === 'interrompido' ? 'interrompido' : finishReason === 'parcial' ? 'a gerar' : 'pronta';
+      commitChat(chatId);
+    };
+    // No word floor: a revision may legitimately be shorter than the original.
+    const {failoverNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream, floor: 0});
+    if(entry.pending && sel) entry.pending.content = stripPassageWrapper(entry.pending.content);
+    commitChat(chatId);
+    setStatus(('revisão pronta — aceita ou descarta. ' + (failoverNote || '')).trim(), !!failoverNote);
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    if(entry.pending && entry.pending.content.trim()){
+      entry.pending.status = 'interrompido';
+      setStatus(aborted ? 'revisão interrompida — podes aceitar o que foi gerado ou descartar.' : err.message, !aborted);
+    } else {
+      delete entry.pending;
+      setStatus(aborted ? 'revisão interrompida.' : err.message, !aborted);
+    }
+    commitChat(chatId);
+  }finally{
+    endGeneration();
+  }
+}
+
+// Models sometimes echo the <<< >>> fence or wrap the passage in quotes.
+function stripPassageWrapper(text){
+  let t = text.trim();
+  t = t.replace(/^PASSAGE:\s*/i, '').replace(/^<<<\s*\n?/, '').replace(/\n?\s*>>>$/, '').trim();
+  const q = t.match(/^(["“«])([\s\S]*)(["”»])$/);
+  if(q && !q[2].includes(q[1])) t = q[2].trim();
+  return t;
+}
+
+function acceptRevision(entry){
+  const p = entry.pending;
+  if(!p) return;
+  let newContent;
+  if(p.scope === 'selection'){
+    const at = locatePassage(entry, p);
+    if(!at){ setStatus('a passagem original mudou ou repete-se no capítulo — não consigo aplicar a revisão.', true); return; }
+    // Keep the original passage's surrounding whitespace so paragraphs stay intact.
+    const lead = p.original.match(/^\s*/)[0];
+    const trail = p.original.match(/\s*$/)[0];
+    newContent = entry.content.slice(0, at.start) + lead + p.content.trim() + trail + entry.content.slice(at.end);
+  } else {
+    newContent = p.content;
+  }
+  entry.versions = pushVersion(entry.versions, entry, 'antes da revisão: ' + p.instruction.slice(0, 60));
+  entry.content = newContent;
+  entry.words = wordCount(newContent);
+  if(p.scope === 'chapter'){
+    entry.provider = p.provider;
+    entry.finishReason = p.status === 'interrompido' ? 'interrompido' : 'revisto';
+  } else {
+    entry.finishReason = 'revisto';
+  }
+  delete entry.pending;
+  const chat = chats[currentChatId];
+  const stale = chat && (chat.summaryCovered || 0) > 0 ? ' O resumo pode estar desatualizado.' : '';
+  rerenderAll();
+  updateStats();
+  setStatus('revisão aceite — a versão anterior ficou em "versões".' + stale);
+}
+
+function discardRevision(entry){
+  delete entry.pending;
+  rerenderAll();
+  setStatus('revisão descartada.');
+}
+
+function restoreVersion(entry, v){
+  if(!confirm('Restaurar esta versão? A versão atual fica guardada em "versões".')) return;
+  const rest = entry.versions.filter(x => x !== v);
+  entry.versions = pushVersion(rest, entry, 'antes de restaurar');
+  entry.content = v.content;
+  entry.words = wordCount(v.content);
+  entry.provider = v.provider || entry.provider;
+  entry.finishReason = 'restaurado';
+  rerenderAll();
+  updateStats();
+  setStatus('versão restaurada.');
+}
+
 /* ---------------- running summary ---------------- */
 
 const SUMMARY_SYSTEM_PROMPT = 'You maintain the running "story so far" summary of a novel that is being written chapter by chapter. Write it in the same language as the chapters. Be factual and dense: key events, reveals, relationship and emotional turning points, character state changes (injuries, secrets known, whereabouts, allegiances) and open threads. No commentary and no preamble. At most about 500 words; compress older material more than recent material.';
@@ -1715,9 +2073,15 @@ async function summarizeStory(chatId = currentChatId, opts = {}){
 }
 
 function rerenderAllNoSave(){
-  $('log').innerHTML = '';
+  const log = $('log');
+  const prevTop = log.scrollTop;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+  log.innerHTML = '';
   chapterCount = 0;
   history.forEach((h, i) => renderEntry(h, i));
+  // Stay where the reader was (e.g. revising chapter 3) unless they were
+  // already following the end of the story.
+  log.scrollTop = atBottom ? log.scrollHeight : prevTop;
   // Always derive from the live array, so it can never point at an entry
   // that regenerate/delete/clear has replaced.
   lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
@@ -1963,7 +2327,13 @@ function migrateChatFields(chat, legacySystemPrompt, legacyLoreIds){
   if(!Array.isArray(chat.loreActive)) chat.loreActive = [...legacyLoreIds];
   if(typeof chat.summary !== 'string') chat.summary = '';
   if(typeof chat.summaryCovered !== 'number') chat.summaryCovered = 0;
-  if(Array.isArray(chat.history)) chat.history.forEach(h => { if(h) delete h.chapter; });
+  if(Array.isArray(chat.history)) chat.history.forEach(h => {
+    if(!h) return;
+    delete h.chapter;
+    // A generation that was running when the page closed is not running now.
+    if(h.finishReason === 'a gerar') h.finishReason = 'interrompido';
+    if(h.pending && h.pending.status === 'a gerar') h.pending.status = 'interrompido';
+  });
 }
 
 async function loadAll(legacySystemPrompt){
@@ -2119,7 +2489,8 @@ $('importInput').addEventListener('change', async (e) => {
       .map(h => h.role === 'user'
         ? {role: 'user', content: h.content}
         : {role: 'assistant', content: h.content, provider: String(h.provider || 'importado'),
-           words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {})});
+           words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {}),
+           ...(Array.isArray(h.versions) ? {versions: sanitizeVersions(h.versions)} : {})});
     if(!imported.length) throw new Error('não contém entradas válidas.');
     saveHistory();
     const id = 'chat_' + Date.now();

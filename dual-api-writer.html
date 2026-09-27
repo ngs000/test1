@@ -194,6 +194,22 @@
     .stats{ display:none; }
     .mode-toggle button{ padding:6px 10px; }
   }
+  #ctxMeter{ font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  #ctxMeter.warn{ color:#e0a86b; }
+  .lore-box{ display:flex; flex-direction:column; gap:6px; }
+  .lore-item .name{ cursor:pointer; }
+  .lore-item .name:hover{ color:var(--gold); }
+  .lore-editor{ display:flex; flex-direction:column; gap:6px; padding:8px; border:1px solid var(--border); border-radius:5px; }
+  .lore-editor textarea{ min-height:170px; font-size:12px; line-height:1.45; resize:vertical; }
+  .lore-entry{ display:flex; gap:6px; align-items:flex-start; font-size:11.5px; }
+  .lore-entry input{ width:auto; margin-top:2px; }
+  .lore-entry .keys{ color:var(--muted); }
+  .mini-actions{ display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
+  .mini-actions button{ background:none; border:none; color:var(--muted); font-size:11.5px; cursor:pointer; padding:0; }
+  .mini-actions button:hover{ color:var(--text); }
+  .mini-actions button:disabled{ opacity:0.5; cursor:default; }
+  textarea.extra-body{ min-height:54px; font-family:var(--mono); font-size:11.5px; resize:vertical; }
+  #ctxBreakdown{ white-space:pre-line; }
 </style>
 </head>
 <body>
@@ -253,6 +269,8 @@
         </select>
       </div>
     </div>
+    <label>Corpo extra (JSON, opcional)</label>
+    <textarea id="pA-extraBody" class="extra-body" placeholder='{"top_p": 0.95, "frequency_penalty": 0.3}'></textarea>
   </fieldset>
 
   <fieldset>
@@ -296,7 +314,15 @@
         </select>
       </div>
     </div>
+    <label>Corpo extra (JSON, opcional)</label>
+    <textarea id="pB-extraBody" class="extra-body" placeholder='{"frequency_penalty": 0.3, "thinking": null}'></textarea>
   </fieldset>
+  <p class="hint" style="margin-top:-12px;">"Corpo extra" é juntado ao pedido: acrescenta parâmetros (top_p, frequency_penalty, presence_penalty, stop...) ou remove um campo pondo-o a <code>null</code> — útil se um provider rejeitar thinking/reasoning_effort.</p>
+
+  <div class="checkline" style="margin-top:-12px;">
+    <input type="checkbox" id="rememberKeys" checked>
+    <label style="margin:0;">lembrar as chaves de API neste browser (desmarcado: só nesta sessão do separador)</label>
+  </div>
 
   <fieldset class="gen-settings">
     <legend>Geração</legend>
@@ -316,23 +342,51 @@
     </div>
     <p class="hint" id="floorWarning" style="color:#e0a86b; display:none;"></p>
     <p class="hint">O piso força continuações mesmo quando o modelo decide parar sozinho (finish_reason "stop") antes de atingir esse número de palavras — é a causa mais comum de respostas curtas apesar de max_tokens alto. Ex.: 5000 para bater o mínimo do teu sistema de escrita.</p>
-    <p class="hint">"Automático" não envia o campo de thinking/reasoning — o provider usa o próprio default. Cada continuação reenvia o histórico + o texto parcial e pede para retomar exatamente onde parou.</p>
+    <div class="checkline">
+      <input type="checkbox" id="streaming" checked>
+      <label style="margin:0;">streaming (mostra o texto a chegar; "Parar" guarda o que já chegou)</label>
+    </div>
+    <label>timeout por pedido (segundos, 0 = sem limite)</label>
+    <input type="number" id="requestTimeout" value="600" min="0" step="30">
+    <p class="hint">Com streaming, conta o tempo sem receber dados; sem streaming, o tempo total do pedido. Se a ligação cair a meio de um stream, o texto recebido é mantido e a geração continua a partir daí.</p>
+    <p class="hint">"Automático" não envia o campo de thinking/reasoning — o provider usa o próprio default. Cada continuação reenvia o contexto + o texto parcial e pede para retomar exatamente onde parou.</p>
     <label>Proxy local (opcional — resolve erros de CORS)</label>
     <input type="text" id="proxyUrl" value="http://localhost:8787/proxy" placeholder="http://localhost:8787/proxy (deixa vazio para chamada direta)">
     <p class="hint">Já vem preenchido para usar com o server.py/start.bat incluídos. Se a API der "Failed to fetch" / erro de CORS, confirma que o server.py está a correr. Com o campo vazio, a ferramenta chama a API diretamente.</p>
   </fieldset>
 
   <fieldset>
-    <legend>Instruções de Sistema</legend>
-    <textarea id="systemPrompt" class="lore" placeholder="Sistema de escrita, regras de estilo, tom, POV, anti-slop, etc. Enviado em todos os pedidos como mensagem de sistema."></textarea>
+    <legend>Contexto desta história</legend>
+    <label>limite de histórico enviado (palavras, 0 = tudo)</label>
+    <input type="number" id="contextWords" value="0" min="0" step="1000">
+    <p class="hint">Com limite, só as entradas mais recentes (até esse nº de palavras) vão no pedido; as anteriores são substituídas pelo resumo abaixo. Ex.: 12000 ≈ o capítulo anterior + a indicação.</p>
+    <label>Resumo da história até agora</label>
+    <textarea id="storySummary" class="lore" placeholder="Acontecimentos, revelações, estado das personagens, fios em aberto... Enviado só quando há histórico cortado pelo limite acima."></textarea>
+    <div class="hint" id="summaryInfo"></div>
+    <div class="mini-actions">
+      <button id="summaryBtn" onclick="summarizeStory()">atualizar resumo com IA</button>
+      <button id="summaryRebuildBtn" onclick="if(confirm('Refazer o resumo do zero a partir de todos os capítulos?')) summarizeStory(currentChatId, {rebuild:true})">refazer do zero</button>
+    </div>
+    <div class="checkline">
+      <input type="checkbox" id="autoSummary">
+      <label style="margin:0;">atualizar o resumo automaticamente após cada capítulo (Modo Autor)</label>
+    </div>
+    <div class="hint" id="ctxBreakdown"></div>
   </fieldset>
 
   <fieldset>
-    <legend>Lorebook (ficheiros)</legend>
-    <label>Adicionar ficheiros (.md, .txt, .json)</label>
+    <legend>Instruções de Sistema (desta história)</legend>
+    <textarea id="systemPrompt" class="lore" placeholder="Sistema de escrita, regras de estilo, tom, POV, anti-slop, etc. Enviado em todos os pedidos desta história como mensagem de sistema."></textarea>
+    <p class="hint">Cada história tem as suas instruções. Uma história nova começa com uma cópia das instruções da história aberta.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Lorebook</legend>
+    <label>Adicionar ficheiros (.md, .txt, .json de worldbook do SillyTavern)</label>
     <input type="file" id="lorebookInput" multiple accept=".md,.markdown,.txt,.json">
+    <div class="mini-actions"><button onclick="newLoreEntry()">+ nova entrada de texto</button></div>
     <div id="lorebookList" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;"></div>
-    <p class="hint">Cada ficheiro com o check ativo é enviado em todos os pedidos (mensagem de sistema, com o nome como cabeçalho). Desmarca para excluir sem apagar. Guardado localmente no browser.</p>
+    <p class="hint">O check ativa o ficheiro <b>nesta história</b>. Um ficheiro de texto é enviado sempre, a não ser que a primeira linha seja <code>keys: nome, alcunha</code> — aí só entra quando uma dessas palavras aparece na indicação, no fim do capítulo anterior ou no resumo. Worldbooks do SillyTavern usam as chaves e entradas "constant" de cada entrada. Clica no nome para ver/editar.</p>
   </fieldset>
 
   <button class="secondary" onclick="clearStory()">Limpar história atual</button>
@@ -353,6 +407,7 @@
       </select>
     </div>
     <div class="stats" id="wordStats">0 palavras</div>
+    <div class="stats" id="ctxMeter"></div>
   </div>
 
   <div id="log"></div>
@@ -374,13 +429,15 @@
 
 <script>
 let mode = 'chat';           // 'chat' | 'author'
-let history = [];            // {role:'user'|'assistant', content, provider, words, chapter?}
+let history = [];            // {role:'user'|'assistant', content, provider, words, finishReason?}
 let chapterCount = 0;
 let lastAssistantEntry = null;
 let editingIndex = null;
 let generating = false;      // only one generation may run at a time
 let genChatId = null;        // chat the running generation belongs to
-let storageWarning = '';     // sticky: localStorage quota errors must stay visible
+let genProgress = null;      // {baseWords, floor, text} for the live word counter
+let storageWarning = '';     // sticky: storage errors must stay visible
+const entryEls = new WeakMap(); // entry -> {bubble, metaText}, for live streaming updates
 
 const $ = id => document.getElementById(id);
 
@@ -390,13 +447,17 @@ function toggleKeyVisibility(id, checkbox){
   $(id).type = checkbox.checked ? 'text' : 'password';
 }
 
-function setMode(m){
-  mode = m;
+function applyModeUI(m){
   $('mode-chat').classList.toggle('active', m==='chat');
   $('mode-author').classList.toggle('active', m==='author');
   $('input').placeholder = m === 'chat'
     ? 'Escreve aqui...'
     : 'Indicação para o próximo capítulo (o que deve acontecer, tom, ponto de vista, etc.)';
+}
+
+function setMode(m){
+  mode = m;
+  applyModeUI(m);
   saveHistory();
 }
 
@@ -404,10 +465,21 @@ function wordCount(str){
   return (str.trim().match(/\S+/g) || []).length;
 }
 
+// Last n words of a text, keeping its original whitespace.
+function tailWords(text, n){
+  const parts = text.match(/\S+\s*/g) || [];
+  return parts.length <= n ? text : parts.slice(-n).join('');
+}
+
+const TOKENS_PER_WORD = 1.6; // Portuguese runs ~1.5-1.8 tokens/word
+function estTokens(words){ return Math.round(words * TOKENS_PER_WORD); }
+function fmtK(n){ return n >= 1000 ? (n / 1000).toFixed(1).replace('.', ',') + 'K' : String(n); }
+
+function entryWords(h){ return typeof h.words === 'number' ? h.words : wordCount(h.content); }
+
 function updateStats(){
   const total = history.filter(h=>h.role==='assistant').reduce((s,h)=>s+h.words,0);
-  const approxTokens = Math.round(total * 1.6); // Portuguese runs ~1.5-1.8 tokens/word
-  $('wordStats').textContent = `${total} palavras geradas (~${approxTokens.toLocaleString('pt-PT')} tokens)`;
+  $('wordStats').textContent = `${total} palavras geradas (~${estTokens(total).toLocaleString('pt-PT')} tokens)`;
 }
 
 function providerConfig(letter){
@@ -419,7 +491,8 @@ function providerConfig(letter){
     maxTokens: parseInt($('p'+letter+'-maxTokens').value, 10) || 4096,
     temperature: parseFloat($('p'+letter+'-temperature').value),
     thinking: $('p'+letter+'-thinking').value,
-    reasoningEffort: $('p'+letter+'-reasoningEffort').value
+    reasoningEffort: $('p'+letter+'-reasoningEffort').value,
+    extraBody: $('p'+letter+'-extraBody').value.trim()
   };
 }
 
@@ -430,13 +503,16 @@ function setStatus(msg, isError){
   el.className = isError ? 'error' : '';
 }
 
+function metaText(entry){
+  return ` ${entry.words} palavras${entry.finishReason ? ` · parou por: ${entry.finishReason}` : ''}`;
+}
+
 function renderEntry(entry, idx){
   if(!entry) return;
   const log = $('log');
 
   if(entry.role === 'assistant' && mode === 'author'){
     chapterCount++;
-    entry.chapter = chapterCount;
     const div = document.createElement('div');
     div.className = 'chapter-divider';
     div.textContent = 'Capítulo ' + chapterCount;
@@ -448,6 +524,7 @@ function renderEntry(entry, idx){
 
   const meta = document.createElement('div');
   meta.className = 'meta';
+  let metaNode = null;
   if(entry.role === 'user'){
     meta.textContent = mode === 'author' ? 'Indicação' : 'Tu';
   } else {
@@ -456,7 +533,8 @@ function renderEntry(entry, idx){
     const badge = document.createElement('span');
     badge.className = 'badge';
     badge.textContent = entry.provider || '?';
-    meta.append(badge, document.createTextNode(` ${entry.words} palavras${entry.finishReason ? ` · parou por: ${entry.finishReason}` : ''}`));
+    metaNode = document.createTextNode(metaText(entry));
+    meta.append(badge, metaNode);
   }
   wrap.appendChild(meta);
 
@@ -494,6 +572,7 @@ function renderEntry(entry, idx){
   bubble.className = 'bubble';
   bubble.textContent = entry.content;
   wrap.appendChild(bubble);
+  entryEls.set(entry, {bubble, metaText: metaNode});
 
   const actions = document.createElement('div');
   actions.className = 'entry-actions';
@@ -527,10 +606,45 @@ function cancelEdit(){ editingIndex = null; rerenderAll(); }
 function saveEdit(idx, value){
   history[idx].content = value;
   if(history[idx].role === 'assistant') history[idx].words = wordCount(value);
-  if(history[idx] === lastAssistantEntry) lastAssistantEntry = history[idx];
   editingIndex = null;
   rerenderAll();
   updateStats();
+}
+
+// Streaming: update just the growing bubble instead of re-rendering the whole
+// story on every chunk. Throttled to a few repaints per second.
+let liveTimer = null;
+const liveQueue = new Map(); // entry -> chatId
+function liveUpdate(chatId, entry){
+  liveQueue.set(entry, chatId);
+  if(liveTimer) return;
+  liveTimer = setTimeout(() => {
+    liveTimer = null;
+    const log = $('log');
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120;
+    for(const [e, cid] of liveQueue){
+      e.words = wordCount(e.content);
+      if(cid !== currentChatId || editingIndex !== null) continue;
+      const els = entryEls.get(e);
+      if(els && els.bubble.isConnected){
+        els.bubble.textContent = e.content;
+        if(els.metaText) els.metaText.textContent = metaText(e);
+      } else {
+        rerenderAllNoSave();
+      }
+    }
+    liveQueue.clear();
+    if(nearBottom) log.scrollTop = log.scrollHeight;
+    updateStats();
+  }, 200);
+}
+
+let lastStreamPersist = 0;
+function persistWhileStreaming(chatId){
+  // Crash safety for the round in flight, without re-saving on every chunk.
+  if(Date.now() - lastStreamPersist < 3000) return;
+  lastStreamPersist = Date.now();
+  persistChats(chatId);
 }
 
 async function regenerate(idx){
@@ -555,7 +669,8 @@ async function regenerate(idx){
     }
     hist[currentIdx] = {role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason};
     commitChat(chatId);
-    setStatus(floorNote, !!floorNote);
+    const staleSummary = (chats[chatId].summaryCovered || 0) > 0 ? ' O resumo pode estar desatualizado — usa "refazer do zero" se necessário.' : '';
+    setStatus((floorNote + staleSummary).trim(), !!floorNote);
   }catch(err){
     // The old chapter is kept on abort/error: partial regenerations are discarded.
     setStatus(err.name === 'AbortError' ? 'geração interrompida — o capítulo original foi mantido.' : err.message, err.name !== 'AbortError');
@@ -565,56 +680,245 @@ async function regenerate(idx){
 }
 
 function deleteEntry(idx){
-  if(!confirm('Apagar esta entrada da história?')) return;
+  const isChapter = history[idx] && history[idx].role === 'assistant' && mode === 'author';
+  const later = history.slice(idx + 1).some(h => h.role === 'assistant');
+  const msg = isChapter && later
+    ? 'Apagar este capítulo? Os capítulos seguintes passam a ser renumerados.'
+    : 'Apagar esta entrada da história?';
+  if(!confirm(msg)) return;
   history.splice(idx, 1);
   editingIndex = null;
   rerenderAll();
   updateStats();
 }
 
-let lorebookFiles = []; // {name, content, active}
+/* ---------------- lorebook ---------------- */
+
+// {id, name, type:'text', content} | {id, name, type:'worldbook', entries:[{name, keys, content, constant, enabled, order}]}
+let lorebookFiles = [];
+let loreOpenId = null;
+
+function newId(prefix){
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function escapeRegExp(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// A text lore file becomes keyword-triggered when its first line is
+// "keys: a, b" (or "<!-- keys: a, b -->"); otherwise it is always sent.
+function parseTextLore(content){
+  const m = content.match(/^\s*(?:<!--\s*)?(?:keys|chaves)\s*:\s*(.*?)\s*(?:-->)?\s*(?:\r?\n|$)/i);
+  if(!m) return {keys: [], body: content.trim()};
+  return {
+    keys: m[1].split(/[,;]/).map(s => s.trim()).filter(Boolean),
+    body: content.slice(m[0].length).trim()
+  };
+}
+
+// SillyTavern world info (standalone worldbook or a card's character_book).
+function parseWorldbook(data){
+  if(!data || typeof data !== 'object') return null;
+  const book = data.entries ? data
+    : data.character_book ? data.character_book
+    : data.data && data.data.character_book ? data.data.character_book
+    : null;
+  if(!book || !book.entries) return null;
+  const list = Array.isArray(book.entries) ? book.entries : Object.values(book.entries);
+  const entries = list
+    .filter(e => e && typeof e.content === 'string')
+    .map((e, i) => {
+      const rawKeys = Array.isArray(e.key) ? e.key
+        : Array.isArray(e.keys) ? e.keys
+        : typeof e.key === 'string' ? e.key.split(',')
+        : [];
+      const keys = rawKeys.map(k => String(k).trim()).filter(Boolean);
+      return {
+        name: String(e.comment || e.name || keys[0] || `entrada ${i + 1}`),
+        keys,
+        content: e.content,
+        constant: !!e.constant,
+        enabled: !(e.disable === true || e.enabled === false),
+        order: Number(e.order ?? e.insertion_order ?? 100) || 0
+      };
+    });
+  return entries.length ? entries : null;
+}
+
+function keyMatches(key, text){
+  const k = key.trim();
+  if(!k) return false;
+  const asRegex = k.match(/^\/(.+)\/([a-z]*)$/);
+  if(asRegex){
+    try{ return new RegExp(asRegex[1], asRegex[2].replace('g', '')).test(text); }catch(e){ return false; }
+  }
+  // Whole-word, case-insensitive, Unicode-aware (accents count as letters).
+  return new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(k)}(?=$|[^\\p{L}\\p{N}_])`, 'iu').test(text);
+}
+
+function activeLoreFiles(chat){
+  const ids = new Set((chat && chat.loreActive) || []);
+  return lorebookFiles.filter(f => ids.has(f.id));
+}
+
+function selectLore(scanText, chat){
+  const hits = [];
+  for(const f of activeLoreFiles(chat)){
+    if(f.type === 'worldbook'){
+      for(const e of f.entries){
+        if(!e.enabled) continue;
+        if(e.constant || e.keys.some(k => keyMatches(k, scanText))) hits.push({title: e.name, content: e.content, order: e.order});
+      }
+    } else {
+      const {keys, body} = parseTextLore(f.content);
+      if(!keys.length || keys.some(k => keyMatches(k, scanText))) hits.push({title: f.name, content: body, order: 100});
+    }
+  }
+  return hits.sort((a, b) => a.order - b.order);
+}
+
+function loreSummaryText(f){
+  if(f.type === 'worldbook'){
+    const constant = f.entries.filter(e => e.constant).length;
+    return `${f.entries.length} entradas${constant ? ` · ${constant} const.` : ''}`;
+  }
+  const {keys, body} = parseTextLore(f.content);
+  return `${wordCount(body)}w · ${keys.length ? 'por chave' : 'sempre'}`;
+}
+
+function toggleLoreActive(f, on){
+  const chat = chats[currentChatId];
+  if(!chat) return;
+  const set = new Set(chat.loreActive || []);
+  if(on) set.add(f.id); else set.delete(f.id);
+  chat.loreActive = [...set];
+  persistChats();
+  updateMeter();
+}
 
 function renderLorebookList(){
   const list = $('lorebookList');
   list.innerHTML = '';
+  const chat = chats[currentChatId] || {};
+  const active = new Set(chat.loreActive || []);
   lorebookFiles.forEach((f, i) => {
+    const box = document.createElement('div');
+    box.className = 'lore-box';
     const row = document.createElement('div');
     row.className = 'lore-item';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = f.active;
-    cb.onchange = () => { f.active = cb.checked; saveLorebooks(); };
+    cb.checked = active.has(f.id);
+    cb.title = 'ativo nesta história';
+    cb.onchange = () => toggleLoreActive(f, cb.checked);
     const name = document.createElement('span');
     name.className = 'name';
-    name.title = f.name;
+    name.title = 'ver/editar ' + f.name;
     name.textContent = f.name;
+    name.onclick = () => { loreOpenId = loreOpenId === f.id ? null : f.id; renderLorebookList(); };
     const count = document.createElement('span');
     count.className = 'count';
-    count.textContent = wordCount(f.content) + 'w';
+    count.textContent = loreSummaryText(f);
     const del = document.createElement('button');
     del.textContent = '×';
     del.onclick = () => {
-      if(!confirm(`Remover "${f.name}" do lorebook?`)) return;
-      lorebookFiles.splice(i,1);
+      if(!confirm(`Remover "${f.name}" do lorebook (em todas as histórias)?`)) return;
+      lorebookFiles.splice(i, 1);
+      saveLorebooks();
       renderLorebookList();
+      updateMeter();
     };
     row.append(cb, name, count, del);
-    list.appendChild(row);
+    box.appendChild(row);
+    if(loreOpenId === f.id) box.appendChild(f.type === 'worldbook' ? worldbookViewer(f) : textLoreEditor(f));
+    list.appendChild(box);
   });
+}
+
+function textLoreEditor(f){
+  const ed = document.createElement('div');
+  ed.className = 'lore-editor';
+  const nameIn = document.createElement('input');
+  nameIn.type = 'text';
+  nameIn.value = f.name;
+  const ta = document.createElement('textarea');
+  ta.value = f.content;
+  const bar = document.createElement('div');
+  bar.className = 'mini-actions';
+  const save = document.createElement('button');
+  save.textContent = 'guardar';
+  save.onclick = () => {
+    f.name = nameIn.value.trim() || f.name;
+    f.content = ta.value;
+    loreOpenId = null;
+    saveLorebooks();
+    renderLorebookList();
+    updateMeter();
+  };
+  const cancel = document.createElement('button');
+  cancel.textContent = 'fechar';
+  cancel.onclick = () => { loreOpenId = null; renderLorebookList(); };
+  bar.append(save, cancel);
+  ed.append(nameIn, ta, bar);
+  return ed;
+}
+
+function worldbookViewer(f){
+  const ed = document.createElement('div');
+  ed.className = 'lore-editor';
+  f.entries.forEach(e => {
+    const row = document.createElement('label');
+    row.className = 'lore-entry';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = e.enabled;
+    cb.onchange = () => { e.enabled = cb.checked; saveLorebooks(); updateMeter(); };
+    const txt = document.createElement('span');
+    const keys = e.constant ? 'constante' : (e.keys.length ? e.keys.join(', ') : 'sem chaves');
+    txt.textContent = `${e.name} — ${wordCount(e.content)}w `;
+    const k = document.createElement('span');
+    k.className = 'keys';
+    k.textContent = `[${keys}]`;
+    txt.appendChild(k);
+    row.append(cb, txt);
+    ed.appendChild(row);
+  });
+  return ed;
+}
+
+function newLoreEntry(){
+  const f = {id: newId('l_'), name: 'nova-entrada.md', type: 'text', content: 'keys: \n\n'};
+  lorebookFiles.push(f);
+  toggleLoreActive(f, true);
+  loreOpenId = f.id;
   saveLorebooks();
+  renderLorebookList();
 }
 
 function saveLorebooks(){
-  try{ localStorage.setItem('dualApiWriterLorebooks', JSON.stringify(lorebookFiles)); }catch(e){}
+  Store.set('lorebooks', lorebookFiles).catch(err => {
+    storageWarning = 'NÃO GUARDADO: não consegui guardar o lorebook (' + err.message + ').';
+    setStatus(storageWarning, true);
+  });
 }
-function loadLorebooks(){
-  const raw = localStorage.getItem('dualApiWriterLorebooks');
-  if(!raw) return;
-  try{ lorebookFiles = JSON.parse(raw); renderLorebookList(); }catch(e){}
+
+// Old format: {name, content, active}. Keeps `active` as legacyActive so the
+// per-story activation can be seeded from it once.
+function normalizeLoreFile(f){
+  if(!f || typeof f !== 'object') return null;
+  if(f.id && (f.type === 'text' || f.type === 'worldbook')) return f;
+  const out = {id: newId('l_'), name: String(f.name || 'lore'), type: 'text', content: String(f.content || ''), legacyActive: f.active !== false};
+  if(/\.json$/i.test(out.name)){
+    try{
+      const entries = parseWorldbook(JSON.parse(out.content));
+      if(entries) return {id: out.id, name: out.name, type: 'worldbook', entries, legacyActive: out.legacyActive};
+    }catch(e){}
+  }
+  return out;
 }
 
 $('lorebookInput').addEventListener('change', async (e) => {
   const files = Array.from(e.target.files);
+  const added = [];
   for(const file of files){
     const looksLikeText = file.type.startsWith('text/') || /\.(md|markdown|txt|json)$/i.test(file.name);
     if(!looksLikeText){
@@ -623,116 +927,151 @@ $('lorebookInput').addEventListener('change', async (e) => {
     }
     try{
       const text = await file.text();
-      lorebookFiles.push({name: file.name, content: text, active: true});
+      if(/\.json$/i.test(file.name)){
+        let entries = null;
+        try{ entries = parseWorldbook(JSON.parse(text)); }catch(err){}
+        if(!entries){
+          setStatus(`"${file.name}" não é um worldbook do SillyTavern — importado como texto.`, true);
+          added.push({id: newId('l_'), name: file.name, type: 'text', content: text});
+        } else {
+          added.push({id: newId('l_'), name: file.name, type: 'worldbook', entries});
+        }
+      } else {
+        added.push({id: newId('l_'), name: file.name, type: 'text', content: text});
+      }
     }catch(err){
       setStatus(`Não consegui ler "${file.name}": ${err.message}`, true);
     }
   }
+  lorebookFiles.push(...added);
+  const chat = chats[currentChatId];
+  if(chat) chat.loreActive = [...new Set([...(chat.loreActive || []), ...added.map(f => f.id)])];
+  saveLorebooks();
+  persistChats();
   renderLorebookList();
+  updateMeter();
   e.target.value = '';
 });
-loadLorebooks();
+
+/* ---------------- context assembly ---------------- */
+
+// Builds the request for `hist`, applying the per-story system prompt, the
+// keyword-triggered lore, the history word limit and the running summary.
+function buildContext(hist){
+  const chat = chats[currentChatId] || {};
+  const sys = $('systemPrompt').value.trim();
+  const summary = $('storySummary').value.trim();
+  const limit = parseInt($('contextWords').value, 10) || 0;
+
+  let kept = hist;
+  if(limit > 0){
+    kept = [];
+    let used = 0;
+    for(let i = hist.length - 1; i >= 0; i--){
+      const w = entryWords(hist[i]);
+      if(used + w > limit){
+        // Always keep at least the tail of the most recent entry.
+        if(!kept.length) kept.unshift({role: hist[i].role, content: '[…] ' + tailWords(hist[i].content, limit)});
+        break;
+      }
+      kept.unshift(hist[i]);
+      used += w;
+    }
+  }
+  const omitted = hist.length - kept.length;
+
+  const lastUser = [...hist].reverse().find(h => h.role === 'user');
+  const lastAssistant = [...hist].reverse().find(h => h.role === 'assistant');
+  const scanText = [
+    lastUser ? lastUser.content : '',
+    lastAssistant ? tailWords(lastAssistant.content, 1500) : '',
+    summary
+  ].join('\n');
+  const loreHits = selectLore(scanText, chat);
+  const loreText = loreHits.map(b => `### ${b.title}\n${b.content}`).join('\n\n');
+  const useSummary = !!summary && omitted > 0;
+
+  const systemParts = [];
+  if(sys) systemParts.push(sys);
+  if(loreText) systemParts.push('## Lorebook\n\n' + loreText);
+  if(useSummary) systemParts.push('## Story so far (summary of the earlier parts, which are not included below)\n\n' + summary);
+
+  const messages = [];
+  if(systemParts.length) messages.push({role:'system', content: systemParts.join('\n\n')});
+  if(omitted > 0 && kept.length && kept[0].role === 'assistant'){
+    messages.push({role:'user', content:'[Earlier parts of the story are omitted here — see "Story so far" in the system message.]'});
+  }
+  let historyWords = 0;
+  for(const h of kept){
+    messages.push({role: h.role, content: h.content});
+    historyWords += entryWords(h);
+  }
+  return {
+    messages,
+    stats: {
+      system: estTokens(wordCount(sys)),
+      lore: estTokens(wordCount(loreText)),
+      loreHits: loreHits.map(h => h.title),
+      summary: useSummary ? estTokens(wordCount(summary)) : 0,
+      history: estTokens(historyWords),
+      kept: kept.length,
+      total: hist.length,
+      omitted,
+      summaryMissing: omitted > 0 && !summary
+    }
+  };
+}
 
 function buildMessages(userText, hist){
   hist = hist || history;
-  const sys = $('systemPrompt').value.trim();
-  const loreBlocks = lorebookFiles
-    .filter(f => f.active)
-    .map(f => `### ${f.name}\n${f.content}`)
-    .join('\n\n');
-  const systemParts = [];
-  if(sys) systemParts.push(sys);
-  if(loreBlocks) systemParts.push('## Lorebook\n\n' + loreBlocks);
-
-  const msgs = [];
-  if(systemParts.length) msgs.push({role:'system', content: systemParts.join('\n\n')});
-  for(const h of hist){
-    msgs.push({role: h.role, content: h.content});
-  }
-  if(userText !== null) msgs.push({role:'user', content: userText});
-  return msgs;
+  if(userText !== null) hist = hist.concat([{role:'user', content: userText}]);
+  return buildContext(hist).messages;
 }
 
-async function callProvider(letter, messages){
-  const cfg = providerConfig(letter);
-  if(!cfg.url || !cfg.key || !cfg.model){
-    throw new Error(`Provider ${letter} está incompleto (URL, modelo ou chave em falta).`);
-  }
-  const body = {
-    model: cfg.model,
-    messages: messages,
-    max_tokens: cfg.maxTokens,
-    temperature: cfg.temperature
-  };
-  if(cfg.thinking !== 'auto'){
-    body.thinking = { type: cfg.thinking };
-  }
-  if(cfg.reasoningEffort !== 'auto'){
-    body.reasoning_effort = cfg.reasoningEffort;
-  }
-  const proxyUrl = $('proxyUrl').value.trim();
-  let fetchUrl = cfg.url;
-  let fetchHeaders = {
-    'Content-Type': 'application/json',
-    'Authorization': 'Bearer ' + cfg.key
-  };
-  if (proxyUrl) {
-    // Route through the local proxy: it forwards to cfg.url server-side,
-    // sidestepping the browser's CORS restriction on the real API.
-    fetchUrl = proxyUrl;
-    fetchHeaders = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + cfg.key,
-      'X-Target-Url': cfg.url
-    };
-  }
-
-  const signal = abortController ? abortController.signal : undefined;
-  let res;
-  for(let attempt = 0; ; attempt++){
-    try{
-      res = await fetch(fetchUrl, {
-        method: 'POST',
-        headers: fetchHeaders,
-        body: JSON.stringify(body),
-        signal
-      });
-    }catch(err){
-      if(err.name === 'AbortError') throw err;
-      if(err instanceof TypeError){
-        if(attempt < MAX_RETRIES){
-          await retryBackoff(attempt, null, `erro de rede com ${cfg.label}`, signal);
-          continue;
-        }
-        throw new Error(`Erro de rede a contactar ${cfg.label}. Se não estás a usar o proxy local, a API pode estar a bloquear pedidos do browser (CORS) — preenche o campo "Proxy local".`);
-      }
-      throw err;
-    }
-    if(res.ok) break;
-    const text = await res.text().catch(()=> '');
-    if(attempt < MAX_RETRIES && RETRY_STATUSES.has(res.status)){
-      await retryBackoff(attempt, res.headers.get('Retry-After'), `${cfg.label} respondeu ${res.status}`, signal);
-      continue;
-    }
-    throw new Error(`${cfg.label} respondeu ${res.status}: ${text.slice(0,300)}`);
-  }
-  const data = await res.json();
-  const choice = data.choices && data.choices[0];
-  if(!choice) throw new Error(`${cfg.label}: resposta sem "choices".`);
-  const content = choice.message?.content ?? choice.text ?? '';
-  const finishReason = choice.finish_reason || choice.stop_reason || 'stop';
-  return {content, finishReason, providerLabel: cfg.label};
+// Token meter: size of the request "Gerar" would send right now.
+let meterTimer = null;
+function updateMeter(){
+  clearTimeout(meterTimer);
+  meterTimer = setTimeout(renderMeter, 250);
 }
+function renderMeter(){
+  if(!chats[currentChatId]) return;
+  const text = $('input').value.trim();
+  const hist = text ? history.concat([{role:'user', content: text}]) : history;
+  const s = buildContext(hist).stats;
+  const total = s.system + s.lore + s.summary + s.history;
+  const detail =
+    `Próximo pedido ≈ ${fmtK(total)} tokens\n` +
+    `sistema ${fmtK(s.system)} · lore ${fmtK(s.lore)} (${s.loreHits.length} entradas${s.loreHits.length ? ': ' + s.loreHits.join(', ') : ''})\n` +
+    `resumo ${fmtK(s.summary)} · histórico ${fmtK(s.history)} (${s.kept}/${s.total} entradas)` +
+    (s.summaryMissing ? `\n⚠ ${s.omitted} entradas cortadas sem resumo — o modelo não as vê.` : '') +
+    (total > 100000 ? '\n⚠ pedido muito grande: define um limite de histórico e usa o resumo.' : '');
+  const el = $('ctxMeter');
+  el.textContent = `próximo pedido ≈ ${fmtK(total)} tokens`;
+  el.title = detail;
+  el.classList.toggle('warn', total > 100000 || s.summaryMissing);
+  $('ctxBreakdown').textContent = detail;
+}
+
+function updateSummaryInfo(){
+  const chat = chats[currentChatId] || {};
+  const n = history.filter(h => h.role === 'assistant').length;
+  const covered = Math.min(chat.summaryCovered || 0, n);
+  $('summaryInfo').textContent = n ? `O resumo gerado cobre ${covered} de ${n} capítulos/respostas.` : '';
+}
+
+/* ---------------- provider calls ---------------- */
 
 // Transient failures worth retrying (rate limits, gateway/overload errors).
 const RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 529]);
 const MAX_RETRIES = 3;
 
+function abortError(){ return new DOMException('Aborted', 'AbortError'); }
+
 function sleep(ms, signal){
   return new Promise((resolve, reject) => {
-    const abortErr = () => new DOMException('Aborted', 'AbortError');
-    if(signal && signal.aborted) return reject(abortErr());
-    const onAbort = () => { clearTimeout(t); reject(abortErr()); };
+    if(signal && signal.aborted) return reject(abortError());
+    const onAbort = () => { clearTimeout(t); reject(abortError()); };
     const t = setTimeout(() => {
       if(signal) signal.removeEventListener('abort', onAbort);
       resolve();
@@ -754,6 +1093,196 @@ async function retryBackoff(attempt, retryAfterHeader, reason, signal){
   finally{ genLabel = prevLabel; }
 }
 
+// opts.onDelta(textSoFar) receives the round's text as it streams in.
+async function callProvider(letter, messages, opts = {}){
+  const {onDelta} = opts;
+  const cfg = providerConfig(letter);
+  if(!cfg.url || !cfg.key || !cfg.model){
+    throw new Error(`Provider ${letter} está incompleto (URL, modelo ou chave em falta).`);
+  }
+  const body = {
+    model: cfg.model,
+    messages: messages,
+    max_tokens: cfg.maxTokens,
+    temperature: cfg.temperature
+  };
+  if(cfg.thinking !== 'auto'){
+    body.thinking = { type: cfg.thinking };
+  }
+  if(cfg.reasoningEffort !== 'auto'){
+    body.reasoning_effort = cfg.reasoningEffort;
+  }
+  if(onDelta && $('streaming').checked) body.stream = true;
+  if(cfg.extraBody){
+    let extra;
+    try{ extra = JSON.parse(cfg.extraBody); }
+    catch(e){ throw new Error(`${cfg.label}: o "corpo extra" não é JSON válido (${e.message}).`); }
+    if(!extra || typeof extra !== 'object' || Array.isArray(extra)){
+      throw new Error(`${cfg.label}: o "corpo extra" tem de ser um objeto JSON {...}.`);
+    }
+    // null removes a field (e.g. {"thinking": null} for providers that reject it).
+    for(const [k, v] of Object.entries(extra)){
+      if(v === null) delete body[k]; else body[k] = v;
+    }
+  }
+  const proxyUrl = $('proxyUrl').value.trim();
+  let fetchUrl = cfg.url;
+  let fetchHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + cfg.key
+  };
+  if (proxyUrl) {
+    // Route through the local proxy: it forwards to cfg.url server-side,
+    // sidestepping the browser's CORS restriction on the real API.
+    fetchUrl = proxyUrl;
+    fetchHeaders = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + cfg.key,
+      'X-Target-Url': cfg.url
+    };
+  }
+
+  const userSignal = abortController ? abortController.signal : null;
+  const timeoutMs = (parseInt($('requestTimeout').value, 10) || 0) * 1000;
+
+  for(let attempt = 0; ; attempt++){
+    if(userSignal && userSignal.aborted) throw abortError();
+    // Per-attempt controller: aborted by "Parar" or by the (idle) timeout.
+    const ctl = new AbortController();
+    let timedOut = false;
+    let timer = null;
+    const arm = () => {
+      clearTimeout(timer);
+      if(timeoutMs > 0) timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
+    };
+    const onUserAbort = () => ctl.abort();
+    if(userSignal) userSignal.addEventListener('abort', onUserAbort, {once: true});
+    try{
+      arm();
+      let res;
+      try{
+        res = await fetch(fetchUrl, {
+          method: 'POST',
+          headers: fetchHeaders,
+          body: JSON.stringify(body),
+          signal: ctl.signal
+        });
+      }catch(err){
+        if(userSignal && userSignal.aborted) throw abortError();
+        if(timedOut || err instanceof TypeError){
+          clearTimeout(timer);
+          if(attempt < MAX_RETRIES){
+            await retryBackoff(attempt, null, timedOut ? `${cfg.label} sem resposta` : `erro de rede com ${cfg.label}`, userSignal);
+            continue;
+          }
+          if(timedOut) throw new Error(`${cfg.label} não respondeu em ${timeoutMs / 1000}s (aumenta o timeout ou põe 0).`);
+          throw new Error(`Erro de rede a contactar ${cfg.label}. Se não estás a usar o proxy local, a API pode estar a bloquear pedidos do browser (CORS) — preenche o campo "Proxy local".`);
+        }
+        throw err;
+      }
+      if(!res.ok){
+        const text = await res.text().catch(()=> '');
+        if(attempt < MAX_RETRIES && RETRY_STATUSES.has(res.status)){
+          clearTimeout(timer);
+          await retryBackoff(attempt, res.headers.get('Retry-After'), `${cfg.label} respondeu ${res.status}`, userSignal);
+          continue;
+        }
+        throw new Error(`${cfg.label} respondeu ${res.status}: ${text.slice(0,300)}`);
+      }
+      return await readCompletion(res, cfg.label, {
+        onDelta, arm,
+        userAborted: () => !!(userSignal && userSignal.aborted),
+        timedOut: () => timedOut,
+        timeoutMs
+      });
+    }finally{
+      clearTimeout(timer);
+      if(userSignal) userSignal.removeEventListener('abort', onUserAbort);
+    }
+  }
+}
+
+function parseCompletionJSON(text, label){
+  let data;
+  try{ data = JSON.parse(text); }
+  catch(e){ throw new Error(`${label}: resposta inválida (${text.slice(0, 200)})`); }
+  if(data.error) throw new Error(`${label}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+  const choice = data.choices && data.choices[0];
+  if(!choice) throw new Error(`${label}: resposta sem "choices".`);
+  const content = choice.message?.content ?? choice.text ?? '';
+  const finishReason = choice.finish_reason || choice.stop_reason || 'stop';
+  return {content, finishReason, providerLabel: label};
+}
+
+// Reads either an SSE stream (stream:true) or a plain JSON body — decided by
+// the first byte, so a proxy or provider that ignores "stream" still works.
+async function readCompletion(res, label, ctx){
+  if(!res.body || !res.body.getReader) return parseCompletionJSON(await res.text(), label);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let format = null; // 'sse' | 'json'
+  let pending = '';
+  let content = '';
+  let finishReason = null;
+  let sawDone = false;
+
+  const handleLine = (line) => {
+    line = line.trim();
+    if(!line.startsWith('data:')) return;
+    const payload = line.slice(5).trim();
+    if(!payload) return;
+    if(payload === '[DONE]'){ sawDone = true; return; }
+    let data;
+    try{ data = JSON.parse(payload); }catch(e){ return; }
+    if(data.error) throw new Error(`${label}: ${data.error.message || JSON.stringify(data.error).slice(0, 300)}`);
+    const choice = data.choices && data.choices[0];
+    if(!choice) return;
+    const piece = (choice.delta && choice.delta.content) || choice.text || (choice.message && choice.message.content) || '';
+    if(piece){
+      content += piece;
+      if(ctx.onDelta) ctx.onDelta(content);
+    }
+    if(choice.finish_reason) finishReason = choice.finish_reason;
+  };
+
+  try{
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      ctx.arm(); // idle timeout: reset on every chunk
+      pending += decoder.decode(value, {stream: true});
+      if(format === null){
+        const t = pending.trimStart();
+        if(!t) continue;
+        format = t[0] === '{' ? 'json' : 'sse';
+      }
+      if(format === 'sse'){
+        const lines = pending.split('\n');
+        pending = lines.pop();
+        lines.forEach(handleLine);
+      }
+    }
+    pending += decoder.decode();
+    if(format !== 'sse') return parseCompletionJSON(pending, label);
+    handleLine(pending);
+  }catch(err){
+    if(ctx.userAborted()){
+      const e = abortError();
+      e.partialContent = content;
+      throw e;
+    }
+    if(content && (ctx.timedOut() || err instanceof TypeError)){
+      // Connection dropped mid-stream: keep what arrived and let the
+      // auto-continue loop resume from there (treated like a max_tokens cut).
+      return {content, finishReason: 'length', providerLabel: label, interrupted: true};
+    }
+    if(ctx.timedOut()) throw new Error(`${label} deixou de enviar dados durante ${ctx.timeoutMs / 1000}s.`);
+    throw err;
+  }
+  // A stream that ends without finish_reason and without [DONE] was cut off.
+  return {content, finishReason: finishReason || (sawDone ? 'stop' : 'length'), providerLabel: label};
+}
+
 let abortController = null;
 let genTimerInterval = null;
 let genLabel = '';
@@ -762,7 +1291,12 @@ let genStartTs = null;
 function tickGenTimer(){
   if(genStartTs === null) return;
   const secs = Math.floor((Date.now() - genStartTs) / 1000);
-  setStatus(`${genLabel} ${secs}s`);
+  let words = '';
+  if(genProgress){
+    const w = genProgress.baseWords + wordCount(stripClosingScaffold(genProgress.text));
+    words = genProgress.floor > 0 ? ` · ${w}/${genProgress.floor} palavras` : ` · ${w} palavras`;
+  }
+  setStatus(`${genLabel} ${secs}s${words}`);
 }
 function startGenTimer(label){
   genLabel = label;
@@ -794,26 +1328,48 @@ function stripClosingScaffold(text){
 const CONTINUE_SAME_CHAPTER_PROMPT = 'Continue this SAME chapter from exactly where the text above stops. Do NOT start a new chapter — do not write a new <plan> or a new time/place header. Do not repeat or summarize what is already written; resume mid-sentence if necessary. Only produce a new <ledger> and <self-check> once this chapter is actually finished.';
 
 // opts.onProgress(full, providerLabel, finishReason) is called after every
-// completed round, so callers can persist partial chapters (abort/crash safe).
+// completed round (and with the partial text on abort), so callers can
+// persist chapters as they grow.
+// opts.onStream(textSoFar) is called as streamed text arrives.
 // opts.baseWords counts text that already exists before `full` (used by
 // manualContinue so the word floor applies to the whole chapter).
 async function generateWithAutoContinue(letter, baseMessages, opts = {}){
-  const {onProgress, baseWords = 0} = opts;
+  const {onProgress, onStream, baseWords = 0} = opts;
   const autoOn = $('autoContinue').checked;
   const maxCont = parseInt($('maxContinues').value, 10) || 0;
   const floor = parseInt($('wordFloor').value, 10) || 0;
 
   let full = '';
-  let providerLabel = '';
+  let providerLabel = providerConfig(letter).label;
   let messages = baseMessages.slice();
   let rounds = 0;
   let lastFinishReason = 'stop';
   let joinParagraph = false; // previous round ended on its own (stop), not mid-sentence
   let emptyStop = false;
+  // After a "stop" round the text ends at a sentence/scene boundary (and was
+  // trimmed); without a separator the next round's first word gets fused on.
+  const sepFor = (text) => joinParagraph && !/^\s/.test(text) ? '\n\n' : '';
+  genProgress = {baseWords, floor, text: ''};
 
   while(true){
     startGenTimer(rounds === 0 ? 'a gerar...' : `a continuar (${rounds}/${maxCont})...`);
-    const {content, finishReason, providerLabel: pl} = await callProvider(letter, messages);
+    let result;
+    try{
+      result = await callProvider(letter, messages, {
+        onDelta: (t) => {
+          const shown = full + sepFor(t) + t;
+          genProgress.text = shown;
+          if(onStream) onStream(shown, providerLabel);
+        }
+      });
+    }catch(err){
+      if(err.name === 'AbortError' && err.partialContent){
+        full += sepFor(err.partialContent) + err.partialContent;
+        if(onProgress) onProgress(full, providerLabel, 'interrompido');
+      }
+      throw err;
+    }
+    const {content, finishReason, providerLabel: pl} = result;
     providerLabel = pl;
     if(!content.trim()){
       // Typically reasoning models spending the whole max_tokens on thinking.
@@ -822,9 +1378,8 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
       emptyStop = true;
       break;
     }
-    // After a "stop" round the text ends at a sentence/scene boundary (and was
-    // trimmed); without a separator the next round's first word gets fused on.
-    full += (joinParagraph && !/^\s/.test(content) ? '\n\n' : '') + content;
+    full += sepFor(content) + content;
+    genProgress.text = full;
     lastFinishReason = finishReason;
 
     const cutOff = finishReason === 'length' || finishReason === 'max_tokens';
@@ -863,16 +1418,18 @@ async function generateWithAutoContinue(letter, baseMessages, opts = {}){
   return {content: full, providerLabel, finishReason: lastFinishReason, floorNote};
 }
 
-function beginGeneration(){
+function beginGeneration(chatId = currentChatId){
   if(generating){
     setStatus('já há uma geração em curso — espera ou carrega em "Parar".', true);
     return false;
   }
   generating = true;
-  genChatId = currentChatId;
+  genChatId = chatId;
   abortController = new AbortController();
   $('sendBtn').disabled = true;
   $('continueBtn').disabled = true;
+  $('summaryBtn').disabled = true;
+  $('summaryRebuildBtn').disabled = true;
   $('stopBtn').style.display = 'inline-block';
   return true;
 }
@@ -880,8 +1437,11 @@ function beginGeneration(){
 function endGeneration(){
   generating = false;
   genChatId = null;
+  genProgress = null;
   $('sendBtn').disabled = false;
   $('continueBtn').disabled = false;
+  $('summaryBtn').disabled = false;
+  $('summaryRebuildBtn').disabled = false;
   $('stopBtn').style.display = 'none';
   stopGenTimer();
   abortController = null;
@@ -903,7 +1463,7 @@ function commitChat(chatId){
     updateStats();
   } else if(chats[chatId]){
     chats[chatId].updatedAt = Date.now();
-    persistChats();
+    persistChats(chatId);
     renderChatList();
   }
 }
@@ -922,43 +1482,71 @@ async function send(){
   inputEl.value = '';
 
   let assistantEntry = null;
-  const onProgress = (full, providerLabel, finishReason) => {
+  const ensureEntry = (providerLabel) => {
     const hist = historyOf(chatId);
-    if(!hist) return;
+    if(!hist) return null;
     if(!assistantEntry){
       assistantEntry = {role:'assistant', content:'', provider: providerLabel, words: 0};
       hist.push(assistantEntry);
     }
-    assistantEntry.content = full;
-    assistantEntry.words = wordCount(full);
-    assistantEntry.provider = providerLabel;
-    assistantEntry.finishReason = finishReason;
+    return assistantEntry;
+  };
+  const onProgress = (full, providerLabel, finishReason) => {
+    const e = ensureEntry(providerLabel);
+    if(!e) return;
+    e.content = full;
+    e.words = wordCount(full);
+    e.provider = providerLabel;
+    e.finishReason = finishReason;
     commitChat(chatId);
   };
+  const onStream = (textSoFar, providerLabel) => {
+    const e = ensureEntry(providerLabel);
+    if(!e) return;
+    e.content = textSoFar;
+    e.finishReason = 'a gerar';
+    liveUpdate(chatId, e);
+    persistWhileStreaming(chatId);
+  };
 
+  let finalMsg = '', finalIsError = false, summarizeAfter = false;
   try{
     const messages = buildMessages(null);
-    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress});
+    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream});
     const where = chatId === currentChatId || !chats[chatId] ? '' : `capítulo concluído em "${chatTitleFor(chats[chatId])}". `;
-    setStatus((where + floorNote).trim(), !!floorNote);
+    finalMsg = (where + floorNote).trim();
+    finalIsError = !!floorNote;
+    summarizeAfter = $('autoSummary').checked && !!chats[chatId] && chats[chatId].mode === 'author';
   }catch(err){
     const aborted = err.name === 'AbortError';
-    if(assistantEntry){
-      // Keep the rounds that already completed instead of throwing them away.
+    if(assistantEntry && assistantEntry.content.trim()){
+      // Keep what was already generated instead of throwing it away.
+      assistantEntry.words = wordCount(assistantEntry.content);
       assistantEntry.finishReason = aborted ? 'interrompido' : 'erro';
       commitChat(chatId);
-      setStatus(`${aborted ? 'geração interrompida' : err.message} — ${assistantEntry.words} palavras das rondas concluídas foram guardadas.`, !aborted);
+      finalMsg = `${aborted ? 'geração interrompida' : err.message} — ${assistantEntry.words} palavras já recebidas foram guardadas.`;
     } else {
       // Nothing was generated: take the brief back out of the history (so a
       // retry doesn't send it twice) and give it back to the composer.
       const hist = historyOf(chatId);
-      const at = hist ? hist.indexOf(userEntry) : -1;
-      if(at !== -1){ hist.splice(at, 1); commitChat(chatId); }
+      if(hist){
+        if(assistantEntry){ const a = hist.indexOf(assistantEntry); if(a !== -1) hist.splice(a, 1); }
+        const at = hist.indexOf(userEntry);
+        if(at !== -1) hist.splice(at, 1);
+        commitChat(chatId);
+      }
       if(chatId === currentChatId && !inputEl.value.trim()) inputEl.value = text;
-      setStatus(aborted ? 'geração interrompida.' : err.message, !aborted);
+      finalMsg = aborted ? 'geração interrompida.' : err.message;
     }
+    finalIsError = !aborted;
   }finally{
     endGeneration();
+  }
+  setStatus(finalMsg, finalIsError);
+  if(summarizeAfter){
+    const err = await summarizeStory(chatId, {quiet: true});
+    if(err) finalMsg = (finalMsg + ' Resumo não atualizado: ' + err).trim();
+    setStatus(finalMsg, finalIsError || !!err);
   }
 }
 
@@ -977,6 +1565,9 @@ async function manualContinue(){
   const base = stripClosingScaffold(original);
   const sep = base !== original ? '\n\n' : '';
   const originalProvider = entry.provider;
+  const mergedProvider = (providerLabel) => !originalProvider ? providerLabel
+    : originalProvider.split(' + ').includes(providerLabel) ? originalProvider
+    : `${originalProvider} + ${providerLabel}`;
   try{
     const messages = buildMessages(null, history.slice(0, idx)).concat([
       {role:'assistant', content: base},
@@ -986,21 +1577,88 @@ async function manualContinue(){
       entry.content = base + sep + full;
       entry.words = wordCount(entry.content);
       entry.finishReason = finishReason;
-      entry.provider = !originalProvider ? providerLabel
-        : originalProvider.split(' + ').includes(providerLabel) ? originalProvider
-        : `${originalProvider} + ${providerLabel}`;
+      entry.provider = mergedProvider(providerLabel);
       commitChat(chatId);
     };
-    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, baseWords: wordCount(base)});
+    const onStream = (textSoFar, providerLabel) => {
+      entry.content = base + sep + textSoFar;
+      entry.finishReason = 'a gerar';
+      entry.provider = mergedProvider(providerLabel);
+      liveUpdate(chatId, entry);
+      persistWhileStreaming(chatId);
+    };
+    const {floorNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream, baseWords: wordCount(base)});
     setStatus(floorNote, !!floorNote);
   }catch(err){
     const aborted = err.name === 'AbortError';
-    const kept = entry.content !== original ? ' — as rondas concluídas foram guardadas' : '';
-    if(kept){ entry.finishReason = aborted ? 'interrompido' : 'erro'; commitChat(chatId); }
+    const kept = entry.content !== original ? ' — o texto já recebido foi guardado' : '';
+    if(kept){
+      entry.words = wordCount(entry.content);
+      entry.finishReason = aborted ? 'interrompido' : 'erro';
+      commitChat(chatId);
+    }
     setStatus((aborted ? 'geração interrompida' : err.message) + kept + '.', !aborted);
   }finally{
     endGeneration();
   }
+}
+
+/* ---------------- running summary ---------------- */
+
+const SUMMARY_SYSTEM_PROMPT = 'You maintain the running "story so far" summary of a novel that is being written chapter by chapter. Write it in the same language as the chapters. Be factual and dense: key events, reveals, relationship and emotional turning points, character state changes (injuries, secrets known, whereabouts, allegiances) and open threads. No commentary and no preamble. At most about 500 words; compress older material more than recent material.';
+const SUMMARY_BATCH_WORDS = 20000;
+
+// Folds the chapters not yet covered into the chat's summary. Returns an
+// error message ('' on success) so callers can report it.
+async function summarizeStory(chatId = currentChatId, opts = {}){
+  const {rebuild = false, quiet = false} = opts;
+  const chat = chats[chatId];
+  if(!chat) return 'história não encontrada';
+  if(!beginGeneration(chatId)) return 'já há uma geração em curso';
+  const letter = $('activeProvider').value;
+  let error = '';
+  try{
+    const chapters = historyOf(chatId).filter(h => h.role === 'assistant' && h.content.trim());
+    let covered = rebuild ? 0 : Math.min(chat.summaryCovered || 0, chapters.length);
+    let summary = rebuild ? '' : (chatId === currentChatId ? $('storySummary').value.trim() : (chat.summary || ''));
+    if(covered >= chapters.length){
+      if(!quiet) setStatus('o resumo já cobre todos os capítulos.');
+      return '';
+    }
+    while(covered < chapters.length){
+      const batch = [];
+      let words = 0;
+      while(covered + batch.length < chapters.length){
+        const c = chapters[covered + batch.length];
+        if(batch.length && words + entryWords(c) > SUMMARY_BATCH_WORDS) break;
+        batch.push(c);
+        words += entryWords(c);
+      }
+      startGenTimer(`a atualizar o resumo (capítulos ${covered + 1}–${covered + batch.length} de ${chapters.length})...`);
+      const text = batch.map((c, i) => `--- Chapter ${covered + i + 1} ---\n${c.content}`).join('\n\n');
+      const {content} = await callProvider(letter, [
+        {role: 'system', content: SUMMARY_SYSTEM_PROMPT},
+        {role: 'user', content: `CURRENT SUMMARY:\n${summary || '(none yet)'}\n\nNEW CHAPTERS TO FOLD IN:\n\n${text}\n\nReturn only the complete updated summary.`}
+      ]);
+      if(!content.trim()) throw new Error('o modelo devolveu um resumo vazio.');
+      summary = content.trim();
+      covered += batch.length;
+      chat.summary = summary;
+      chat.summaryCovered = covered;
+      if(chatId === currentChatId) $('storySummary').value = summary;
+      persistChats(chatId);
+    }
+    if(!quiet) setStatus('resumo atualizado.');
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    error = aborted ? 'interrompido' : err.message;
+    if(!quiet) setStatus(aborted ? 'atualização do resumo interrompida.' : 'resumo: ' + err.message, !aborted);
+  }finally{
+    endGeneration();
+    updateSummaryInfo();
+    updateMeter();
+  }
+  return error;
 }
 
 function rerenderAllNoSave(){
@@ -1011,6 +1669,8 @@ function rerenderAllNoSave(){
   // that regenerate/delete/clear has replaced.
   lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
   $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
+  updateSummaryInfo();
+  updateMeter();
 }
 
 function rerenderAll(){
@@ -1018,8 +1678,80 @@ function rerenderAll(){
   saveHistory();
 }
 
-const CHATS_KEY = 'dualApiWriterChats';
-const CURRENT_CHAT_KEY = 'dualApiWriterCurrentChatId';
+/* ---------------- storage ---------------- */
+
+// IndexedDB key-value store (no ~5MB localStorage cap, no whole-app
+// JSON.stringify on every change). Falls back to per-key localStorage.
+const LS_PREFIX = 'dualApiWriter:';
+const Store = {
+  backend: 'local',
+  db: null,
+  async init(){
+    try{
+      if(!window.indexedDB) throw new Error('no indexedDB');
+      this.db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open('dualApiWriter', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('kv');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+        req.onblocked = () => reject(new Error('blocked'));
+      });
+      this.backend = 'idb';
+    }catch(e){
+      this.backend = 'local';
+    }
+  },
+  _tx(txMode, fn){
+    return new Promise((resolve, reject) => {
+      const t = this.db.transaction('kv', txMode);
+      const req = fn(t.objectStore('kv'));
+      t.oncomplete = () => resolve(req ? req.result : undefined);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error('transação abortada'));
+    });
+  },
+  async get(key){
+    if(this.backend === 'idb') return this._tx('readonly', s => s.get(key));
+    const raw = localStorage.getItem(LS_PREFIX + key);
+    if(raw === null) return undefined;
+    try{ return JSON.parse(raw); }catch(e){ return undefined; }
+  },
+  async set(key, value){
+    if(this.backend === 'idb') return this._tx('readwrite', s => s.put(value, key));
+    localStorage.setItem(LS_PREFIX + key, JSON.stringify(value));
+  },
+  async del(key){
+    if(this.backend === 'idb') return this._tx('readwrite', s => s.delete(key));
+    localStorage.removeItem(LS_PREFIX + key);
+  },
+  async all(prefix){
+    const out = {};
+    if(this.backend === 'idb'){
+      await new Promise((resolve, reject) => {
+        const t = this.db.transaction('kv', 'readonly');
+        const req = t.objectStore('kv').openCursor();
+        req.onsuccess = () => {
+          const c = req.result;
+          if(!c) return;
+          if(String(c.key).startsWith(prefix)) out[c.key] = c.value;
+          c.continue();
+        };
+        t.oncomplete = resolve;
+        t.onerror = () => reject(t.error);
+      });
+      return out;
+    }
+    for(let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      if(!k.startsWith(LS_PREFIX + prefix)) continue;
+      try{ out[k.slice(LS_PREFIX.length)] = JSON.parse(localStorage.getItem(k)); }catch(e){}
+    }
+    return out;
+  }
+};
+
+const CHATS_KEY = 'dualApiWriterChats';               // legacy (single localStorage blob)
+const CURRENT_CHAT_KEY = 'dualApiWriterCurrentChatId'; // legacy
 let chats = {};
 let currentChatId = null;
 
@@ -1030,18 +1762,44 @@ function chatTitleFor(chat){
   return 'Nova história';
 }
 
-function persistChats(){
-  try{
-    localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
-    localStorage.setItem(CURRENT_CHAT_KEY, currentChatId);
-    storageWarning = '';
-  }catch(e){
-    // Sticky: setStatus('') after a generation must not hide this, or the
-    // user keeps writing without realising nothing is being saved.
-    storageWarning = 'NÃO GUARDADO: o armazenamento do browser está cheio — faz Backup .json já.';
-    setStatus(storageWarning, true);
-  }
+// Only the chats that changed are written, at most once a second, one after
+// another (so an older snapshot can never overwrite a newer one).
+const dirtyChats = new Set();
+let persistTimer = null;
+let persistChain = Promise.resolve();
+
+function persistChats(...ids){
+  (ids.length ? ids : [currentChatId]).forEach(id => { if(id) dirtyChats.add(id); });
+  if(!persistTimer) persistTimer = setTimeout(flushPersist, 1000);
 }
+
+function flushPersist(){
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  const ids = [...dirtyChats];
+  dirtyChats.clear();
+  persistChain = persistChain.then(async () => {
+    try{
+      for(const id of ids){
+        if(chats[id]) await Store.set('chat:' + id, chats[id]);
+        else await Store.del('chat:' + id);
+      }
+      await Store.set('currentChatId', currentChatId);
+      if(storageWarning){ storageWarning = ''; if(!generating) setStatus(''); }
+    }catch(e){
+      ids.forEach(id => dirtyChats.add(id));
+      // Sticky: setStatus('') after a generation must not hide this, or the
+      // user keeps writing without realising nothing is being saved.
+      storageWarning = 'NÃO GUARDADO: o armazenamento do browser falhou (' + (e && e.message || e) + ') — faz Backup .json já.';
+      setStatus(storageWarning, true);
+    }
+  });
+  return persistChain;
+}
+
+// Try not to lose the last second of changes when the tab goes away.
+window.addEventListener('pagehide', flushPersist);
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') flushPersist(); });
 
 function saveHistory(){
   // Persists the in-memory history/mode into the current chat slot.
@@ -1068,7 +1826,7 @@ function renderChatList(){
     row.onclick = () => switchChat(id);
     const title = document.createElement('span');
     title.className = 'title';
-    title.textContent = chatTitleFor(chat);
+    title.textContent = chatTitleFor(chat) + (generating && id === genChatId ? ' ⋯' : '');
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '×';
@@ -1078,31 +1836,38 @@ function renderChatList(){
   }
 }
 
+function newChatObject(from){
+  // A new story inherits the open story's writing system and lore selection.
+  return {
+    title: null, mode: 'chat', history: [], updatedAt: Date.now(),
+    systemPrompt: from ? (from.systemPrompt || '') : '',
+    loreActive: from ? [...(from.loreActive || [])] : [],
+    summary: '', summaryCovered: 0
+  };
+}
+
 function loadChatIntoMemory(id){
   const chat = chats[id];
   currentChatId = id;
   history = (chat.history || []).filter(Boolean);
   chapterCount = 0;
   editingIndex = null;
-  lastAssistantEntry = [...history].reverse().find(h => h.role === 'assistant') || null;
-  const m = chat.mode || 'chat';
-  mode = m;
-  $('mode-chat').classList.toggle('active', m==='chat');
-  $('mode-author').classList.toggle('active', m==='author');
-  $('input').placeholder = m === 'chat'
-    ? 'Escreve aqui...'
-    : 'Indicação para o próximo capítulo (o que deve acontecer, tom, ponto de vista, etc.)';
+  mode = chat.mode || 'chat';
+  applyModeUI(mode);
+  $('systemPrompt').value = chat.systemPrompt || '';
+  $('storySummary').value = chat.summary || '';
+  loreOpenId = null;
+  renderLorebookList();
   rerenderAllNoSave();
   updateStats();
-  $('continueBtn').style.display = lastAssistantEntry ? 'inline-block' : 'none';
 }
 
 function newChat(){
   saveHistory();
   const id = 'chat_' + Date.now();
-  chats[id] = {title: null, mode: 'chat', history: [], updatedAt: Date.now()};
+  chats[id] = newChatObject(chats[currentChatId]);
   loadChatIntoMemory(id);
-  persistChats();
+  persistChats(id);
   renderChatList();
 }
 
@@ -1120,25 +1885,61 @@ function deleteChat(id){
     return;
   }
   if(!confirm('Apagar esta história permanentemente?')) return;
+  const template = chats[id];
   delete chats[id];
+  persistChats(id);
   if(id === currentChatId){
     const remaining = Object.keys(chats).sort((a,b) => (chats[b].updatedAt||0) - (chats[a].updatedAt||0));
     if(remaining.length){
       loadChatIntoMemory(remaining[0]);
     } else {
       const newId = 'chat_' + Date.now();
-      chats[newId] = {title: null, mode: 'chat', history: [], updatedAt: Date.now()};
+      chats[newId] = newChatObject(template);
       loadChatIntoMemory(newId);
+      persistChats(newId);
     }
   }
   persistChats();
   renderChatList();
 }
 
-function loadChats(){
-  try{ chats = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}'); }catch(e){ chats = {}; }
-  let id = localStorage.getItem(CURRENT_CHAT_KEY);
+// Per-story system prompt and lore activation: older data kept one global
+// prompt (in the config) and a global "active" flag per lore file.
+function migrateChatFields(chat, legacySystemPrompt, legacyLoreIds){
+  if(typeof chat.systemPrompt !== 'string') chat.systemPrompt = legacySystemPrompt || '';
+  if(!Array.isArray(chat.loreActive)) chat.loreActive = [...legacyLoreIds];
+  if(typeof chat.summary !== 'string') chat.summary = '';
+  if(typeof chat.summaryCovered !== 'number') chat.summaryCovered = 0;
+  if(Array.isArray(chat.history)) chat.history.forEach(h => { if(h) delete h.chapter; });
+}
 
+async function loadAll(legacySystemPrompt){
+  await Store.init();
+
+  // Lorebook
+  let rawLore = await Store.get('lorebooks');
+  let loreMigrated = false;
+  if(!Array.isArray(rawLore)){
+    try{ rawLore = JSON.parse(localStorage.getItem('dualApiWriterLorebooks') || '[]'); }catch(e){ rawLore = []; }
+    loreMigrated = true;
+  }
+  lorebookFiles = rawLore.map(normalizeLoreFile).filter(Boolean);
+  const legacyLoreIds = lorebookFiles.filter(f => f.legacyActive).map(f => f.id);
+  if(lorebookFiles.some(f => 'legacyActive' in f)) loreMigrated = true;
+  lorebookFiles.forEach(f => delete f.legacyActive);
+
+  // Stories
+  const stored = await Store.all('chat:');
+  chats = {};
+  for(const [k, v] of Object.entries(stored)) chats[k.slice(5)] = v;
+  let migrated = false;
+  if(!Object.keys(chats).length){
+    try{ chats = JSON.parse(localStorage.getItem(CHATS_KEY) || '{}') || {}; }catch(e){ chats = {}; }
+    migrated = Object.keys(chats).length > 0;
+  }
+  let id = await Store.get('currentChatId');
+  if(!id || !chats[id]) id = localStorage.getItem(CURRENT_CHAT_KEY);
+  if(!id || !chats[id]) id = Object.keys(chats).sort((a,b) => (chats[b].updatedAt||0) - (chats[a].updatedAt||0))[0];
   if(!id || !chats[id]){
     // migrate the old single-history storage, if present, into the first chat slot
     let legacyHistory = [], legacyMode = 'chat';
@@ -1147,11 +1948,32 @@ function loadChats(){
       try{ const d = JSON.parse(legacyRaw); legacyHistory = d.history || []; legacyMode = d.mode || 'chat'; }catch(e){}
     }
     id = 'chat_' + Date.now();
-    chats[id] = {title: null, mode: legacyMode, history: legacyHistory, updatedAt: Date.now()};
+    chats[id] = Object.assign(newChatObject(null), {mode: legacyMode, history: legacyHistory});
+    migrated = true;
   }
+  for(const chat of Object.values(chats)) migrateChatFields(chat, legacySystemPrompt, legacyLoreIds);
+
   loadChatIntoMemory(id);
-  persistChats();
   renderChatList();
+
+  if(migrated || loreMigrated){
+    try{
+      await Store.set('lorebooks', lorebookFiles);
+      for(const [cid, chat] of Object.entries(chats)) await Store.set('chat:' + cid, chat);
+      await Store.set('currentChatId', currentChatId);
+      // Only drop the old blobs once everything is safely in the new store.
+      localStorage.removeItem(CHATS_KEY);
+      localStorage.removeItem('dualApiWriterLorebooks');
+      localStorage.removeItem('dualApiWriterHistory');
+    }catch(e){
+      storageWarning = 'NÃO GUARDADO: falhou a migração do armazenamento (' + e.message + ') — faz Backup .json.';
+      setStatus(storageWarning, true);
+    }
+  } else {
+    persistChats();
+  }
+  // Ask the browser not to evict our data under storage pressure.
+  if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 }
 
 function clearStory(){
@@ -1164,10 +1986,15 @@ function clearStory(){
   chapterCount = 0;
   lastAssistantEntry = null;
   editingIndex = null;
+  const chat = chats[currentChatId];
+  if(chat){ chat.summary = ''; chat.summaryCovered = 0; }
+  $('storySummary').value = '';
   $('log').innerHTML = '';
   $('continueBtn').style.display = 'none';
   updateStats();
   saveHistory();
+  updateSummaryInfo();
+  updateMeter();
 }
 
 function compileStory(){
@@ -1211,6 +2038,9 @@ function downloadJSON(){
     title: chatTitleFor(chat),
     mode: mode,
     exportedAt: new Date().toISOString(),
+    systemPrompt: $('systemPrompt').value,
+    summary: $('storySummary').value,
+    summaryCovered: chat.summaryCovered || 0,
     history: history
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
@@ -1241,9 +2071,14 @@ $('importInput').addEventListener('change', async (e) => {
     saveHistory();
     const id = 'chat_' + Date.now();
     const title = typeof data.title === 'string' && data.title.trim() ? data.title.trim().slice(0, 80) : null;
-    chats[id] = {title, mode: data.mode === 'author' ? 'author' : 'chat', history: imported, updatedAt: Date.now()};
+    const chat = newChatObject(chats[currentChatId]);
+    Object.assign(chat, {title, mode: data.mode === 'author' ? 'author' : 'chat', history: imported});
+    if(typeof data.systemPrompt === 'string') chat.systemPrompt = data.systemPrompt;
+    if(typeof data.summary === 'string') chat.summary = data.summary;
+    if(typeof data.summaryCovered === 'number') chat.summaryCovered = data.summaryCovered;
+    chats[id] = chat;
     loadChatIntoMemory(id);
-    persistChats();
+    persistChats(id);
     renderChatList();
     setStatus(`"${chatTitleFor(chats[id])}" importada (${imported.length} entradas).`);
   }catch(err){
@@ -1251,31 +2086,46 @@ $('importInput').addEventListener('change', async (e) => {
   }
 });
 
-// persist provider config + lore locally (not the chat history)
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','systemPrompt','autoContinue','maxContinues','wordFloor','proxyUrl','activeProvider'];
+/* ---------------- config ---------------- */
+
+// Global settings (providers, generation). The system prompt, summary and
+// lore selection are per story and live in the story itself.
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
+const KEY_IDS = ['pA-key', 'pB-key'];
+const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
+
 function saveConfig(){
+  const remember = $('rememberKeys').checked;
   const cfg = {};
   for(const id of PERSIST_KEYS){
     const el = $(id);
+    if(KEY_IDS.includes(id) && !remember){
+      // Session only: survives reloads of this tab, never written to disk config.
+      try{ sessionStorage.setItem(SESSION_KEY_PREFIX + id, el.value); }catch(e){}
+      continue;
+    }
     cfg[id] = el.type === 'checkbox' ? el.checked : el.value;
   }
-  localStorage.setItem('dualApiWriterConfig', JSON.stringify(cfg));
+  if(remember) KEY_IDS.forEach(id => { try{ sessionStorage.removeItem(SESSION_KEY_PREFIX + id); }catch(e){} });
+  try{ localStorage.setItem('dualApiWriterConfig', JSON.stringify(cfg)); }catch(e){}
 }
 function loadConfig(){
-  const raw = localStorage.getItem('dualApiWriterConfig');
-  if(!raw) return;
-  try{
-    const cfg = JSON.parse(raw);
-    for(const id of PERSIST_KEYS){
-      if(cfg[id] === undefined) continue;
-      const el = $(id);
-      if(el.type === 'checkbox') el.checked = !!cfg[id];
-      else el.value = cfg[id];
-    }
-  }catch(e){}
+  let cfg = {};
+  try{ cfg = JSON.parse(localStorage.getItem('dualApiWriterConfig') || '{}') || {}; }catch(e){}
+  for(const id of PERSIST_KEYS){
+    if(cfg[id] === undefined) continue;
+    const el = $(id);
+    if(el.type === 'checkbox') el.checked = !!cfg[id];
+    else el.value = cfg[id];
+  }
+  if(!$('rememberKeys').checked){
+    KEY_IDS.forEach(id => {
+      try{ $(id).value = sessionStorage.getItem(SESSION_KEY_PREFIX + id) || ''; }catch(e){}
+    });
+  }
+  return cfg;
 }
 PERSIST_KEYS.forEach(id => $(id).addEventListener('change', saveConfig));
-loadConfig();
 
 // The word floor only works through continuations; flag settings that disable it.
 function updateFloorWarning(){
@@ -1289,10 +2139,24 @@ function updateFloorWarning(){
 }
 ['wordFloor', 'maxContinues', 'autoContinue'].forEach(id => $(id).addEventListener('input', updateFloorWarning));
 $('autoContinue').addEventListener('change', updateFloorWarning);
-updateFloorWarning();
-loadChats();
+
+// Per-story text fields.
+$('systemPrompt').addEventListener('input', () => {
+  if(!chats[currentChatId]) return;
+  chats[currentChatId].systemPrompt = $('systemPrompt').value;
+  persistChats();
+  updateMeter();
+});
+$('storySummary').addEventListener('input', () => {
+  if(!chats[currentChatId]) return;
+  chats[currentChatId].summary = $('storySummary').value;
+  persistChats();
+  updateMeter();
+});
+['input', 'contextWords'].forEach(id => $(id).addEventListener('input', updateMeter));
 
 window.addEventListener('beforeunload', (e) => {
+  flushPersist();
   if(!generating) return;
   e.preventDefault();
   e.returnValue = '';
@@ -1304,6 +2168,10 @@ $('input').addEventListener('keydown', (e)=>{
     send();
   }
 });
+
+const legacyConfig = loadConfig();
+updateFloorWarning();
+window.appReady = loadAll(typeof legacyConfig.systemPrompt === 'string' ? legacyConfig.systemPrompt : '');
 </script>
 </body>
 </html>

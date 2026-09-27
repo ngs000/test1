@@ -244,6 +244,17 @@
     box-shadow:-10px 0 30px #0006; display:none;
   }
   #continuity.open{ display:block; }
+  #exportPanel{
+    position:fixed; right:20px; bottom:120px; width:min(380px, calc(100% - 40px)); z-index:32;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 14px;
+    box-shadow:0 10px 30px #0008; display:none;
+  }
+  #exportPanel.open{ display:block; }
+  #exportPanel .ol-head{ display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+  #exportPanel .ol-head .spacer{ flex:1; }
+  #exportPanel .x{ background:none; border:1px solid var(--border); color:var(--muted); border-radius:5px; padding:2px 8px; cursor:pointer; }
+  #exportPanel .exp-buttons{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  #exportPanel .exp-buttons button{ flex:1; padding:8px 0; }
   #continuity h2{ font-family:var(--serif); font-weight:400; font-size:19px; margin:0; }
   #continuity .ol-head{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
   #continuity .ol-head .spacer{ flex:1; }
@@ -570,6 +581,25 @@
   </div>
   <div id="outline"></div>
   <div id="continuity"></div>
+  <div id="exportPanel">
+    <div class="ol-head"><b style="font-family:var(--serif);font-weight:400;font-size:16px;">Exportar</b><span class="spacer"></span>
+      <button class="x" onclick="toggleExport()">×</button></div>
+    <label>título do livro</label>
+    <input type="text" id="bookTitle">
+    <label>autor</label>
+    <input type="text" id="exportAuthor" placeholder="o teu nome ou pseudónimo">
+    <div class="checkline">
+      <input type="checkbox" id="exportStrip" checked>
+      <label style="margin:0;">remover blocos de estrutura (&lt;plan&gt;, &lt;ledger&gt;, &lt;self-check&gt;, [DIRECTIONS])</label>
+    </div>
+    <div class="exp-buttons">
+      <button class="secondary" onclick="exportAs('txt')">.txt</button>
+      <button class="secondary" onclick="exportAs('md')">.md</button>
+      <button class="secondary" onclick="exportAs('epub')">.epub</button>
+      <button class="secondary" onclick="exportAs('docx')">.docx</button>
+    </div>
+    <p class="hint">EPUB para leitores de ebooks (Kobo, Apple Books, Kindle via "Send to Kindle"); DOCX para Word, LibreOffice ou Google Docs. <code>*itálico*</code>/<code>**negrito**</code> ficam formatados e linhas como <code>* * *</code> viram quebras de cena. "Copiar tudo" também usa a opção de remover blocos.</p>
+  </div>
 
   <div id="log"></div>
 
@@ -579,7 +609,7 @@
       <button class="secondary" id="continueBtn" onclick="manualContinue()" style="display:none;">Continuar geração</button>
       <div class="spacer"></div>
       <span id="status"></span>
-      <button class="secondary" onclick="downloadStory()">Descarregar .txt</button>
+      <button class="secondary" id="exportBtn" onclick="toggleExport()">Exportar…</button>
       <button class="secondary" onclick="downloadJSON()">Backup .json</button>
       <button class="secondary" onclick="copyStory()">Copiar tudo</button>
       <button class="secondary" id="stopBtn" onclick="stopGeneration()" style="display:none; border-color:var(--accent); color:var(--accent);">Parar</button>
@@ -3852,19 +3882,39 @@ function clearStory(){
   updateMeter();
 }
 
+/* ---------------- export: txt / md / epub / docx ---------------- */
+
+function toggleExport(){
+  const panel = $('exportPanel');
+  panel.classList.toggle('open');
+  if(panel.classList.contains('open')) $('bookTitle').value = bookTitle();
+}
+
+function bookTitle(){
+  const chat = chats[currentChatId] || {};
+  return (chat.bookTitle && chat.bookTitle.trim()) || chatTitleFor(chat);
+}
+
+// Scaffold blocks from the writing system: they help the model, not the reader.
+function stripScaffoldBlocks(text){
+  return text
+    .replace(/<(plan|ledger|self-check)>[\s\S]*?<\/\1>/gi, '')
+    .replace(/\[DIRECTIONS\][\s\S]*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// [{heading, text}] — the shown variant of every chapter, in order.
+function exportChapters(){
+  const strip = $('exportStrip').checked;
+  const clean = t => strip ? stripScaffoldBlocks(t) : t.trim();
+  const chapters = history.filter(h => h.role === 'assistant' && h.content.trim());
+  if(mode !== 'author') return [{heading: '', text: chapters.map(h => clean(h.content)).join('\n\n')}];
+  return chapters.map((h, i) => ({heading: `Capítulo ${i + 1}${h.title ? ': ' + h.title : ''}`, text: clean(h.content)}));
+}
+
 function compileStory(){
-  let out = '';
-  let ch = 0;
-  for(const h of history){
-    if(h.role === 'assistant'){
-      if(mode === 'author'){
-        ch++;
-        out += `\n\n--- Capítulo ${ch}${h.title ? ': ' + h.title : ''} ---\n\n`;
-      }
-      out += h.content + '\n';
-    }
-  }
-  return out.trim();
+  return exportChapters().map(c => (c.heading ? `--- ${c.heading} ---\n\n` : '') + c.text).join('\n\n\n').trim();
 }
 
 function copyStory(){
@@ -3874,17 +3924,301 @@ function copyStory(){
 }
 
 function fileBaseName(){
-  const title = chatTitleFor(chats[currentChatId] || {});
-  return title.replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').trim().replace(/\s+/g, ' ').slice(0, 60) || 'historia';
+  return bookTitle().replace(/[\\/:*?"<>|\r\n\t]+/g, ' ').trim().replace(/\s+/g, ' ').slice(0, 60) || 'historia';
 }
 
-function downloadStory(){
-  const blob = new Blob([compileStory()], {type:'text/plain;charset=utf-8'});
+function saveBlob(blob, filename){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = fileBaseName() + '.txt';
+  a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Kept for older callers: plain-text download.
+function downloadStory(){ exportAs('txt'); }
+
+// Paragraph model shared by the rich formats: every non-empty line is a
+// paragraph; "* * *", "***", "#", "~~~" etc. on their own line are scene breaks.
+const SCENE_BREAK_RE = /^\s*(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:~\s*){3,}|#{1,3}|§)\s*$/;
+function toBlocks(text){
+  return text.split('\n').map(l => l.trim()).filter(Boolean)
+    .map(l => SCENE_BREAK_RE.test(l) ? {type: 'break'} : {type: 'p', text: l.replace(/^#{1,6}\s+/, '')});
+}
+
+// Inline *italic* / **bold** / _italic_ -> [{text, i, b}]
+function inlineRuns(text){
+  const runs = [];
+  const re = /(\*\*[^*\n]+?\*\*|\*[^*\s][^*\n]*?\*|(?<![\p{L}\p{N}])_[^_\s][^_\n]*?_(?![\p{L}\p{N}]))/gu;
+  let pos = 0, m;
+  while((m = re.exec(text))){
+    if(m.index > pos) runs.push({text: text.slice(pos, m.index)});
+    const tok = m[0];
+    if(tok.startsWith('**')) runs.push({text: tok.slice(2, -2), b: true});
+    else runs.push({text: tok.slice(1, -1), i: true});
+    pos = m.index + tok.length;
+  }
+  if(pos < text.length) runs.push({text: text.slice(pos)});
+  return runs;
+}
+
+function xmlEscape(s){
+  return s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]))
+          .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+}
+
+function exportMarkdown(title, author, chapters){
+  const parts = [`# ${title}`];
+  if(author) parts.push(`*${author}*`);
+  for(const c of chapters){
+    if(c.heading) parts.push(`## ${c.heading}`);
+    parts.push(toBlocks(c.text).map(b => b.type === 'break' ? '* * *' : b.text).join('\n\n'));
+  }
+  return parts.join('\n\n') + '\n';
+}
+
+/* ---- minimal ZIP writer (stored entries; enough for EPUB and DOCX) ---- */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for(let n = 0; n < 256; n++){
+    let c = n;
+    for(let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// files: [{name, data: string|Uint8Array}] in order (EPUB needs "mimetype" first).
+function makeZip(files){
+  const enc = new TextEncoder();
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const chunks = [], central = [];
+  let offset = 0;
+  for(const f of files){
+    const name = enc.encode(f.name);
+    const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);        // version needed
+    local.setUint16(6, 0x0800, true);    // UTF-8 names
+    local.setUint16(8, 0, true);         // stored
+    local.setUint16(10, dosTime, true);
+    local.setUint16(12, dosDate, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, name.length, true);
+    local.setUint16(28, 0, true);
+    chunks.push(new Uint8Array(local.buffer), name, data);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);
+    cen.setUint16(4, 20, true);
+    cen.setUint16(6, 20, true);
+    cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true);
+    cen.setUint16(12, dosTime, true);
+    cen.setUint16(14, dosDate, true);
+    cen.setUint32(16, crc, true);
+    cen.setUint32(20, data.length, true);
+    cen.setUint32(24, data.length, true);
+    cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), name);
+    offset += 30 + name.length + data.length;
+  }
+  const centralSize = central.reduce((s, c) => s + c.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, new Uint8Array(end.buffer)]);
+}
+
+/* ---- EPUB 3 (with an NCX for older readers) ---- */
+
+function epubXhtml(title, bodyInner){
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="pt-PT" lang="pt-PT">
+<head><meta charset="UTF-8"/><title>${xmlEscape(title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body>
+${bodyInner}
+</body>
+</html>`;
+}
+
+function runsToHtml(text){
+  return inlineRuns(text).map(r => {
+    const t = xmlEscape(r.text);
+    return r.b ? `<strong>${t}</strong>` : r.i ? `<em>${t}</em>` : t;
+  }).join('');
+}
+
+function buildEpub(title, author, chapters){
+  const uid = 'urn:uuid:' + (crypto.randomUUID ? crypto.randomUUID() : newId('b'));
+  const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const css = `body{font-family:Georgia,serif;line-height:1.5;margin:0 5%;}
+p{margin:0;text-indent:1.4em;text-align:justify;}
+h1.chapter + p, p.first, hr.scene + p{text-indent:0;}
+h1.chapter{font-weight:normal;text-align:center;margin:3em 0 2em;font-size:1.5em;page-break-before:always;}
+hr.scene{border:none;margin:1.2em 0;text-align:center;}
+hr.scene:after{content:"* * *";}
+.titlepage{text-align:center;margin-top:30%;}
+.titlepage h1{font-weight:normal;font-size:2em;margin-bottom:1em;}
+.titlepage .author{font-style:italic;}`;
+  const files = [
+    {name: 'mimetype', data: 'application/epub+zip'},
+    {name: 'META-INF/container.xml', data: `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`},
+    {name: 'OEBPS/style.css', data: css},
+    {name: 'OEBPS/title.xhtml', data: epubXhtml(title,
+      `<section class="titlepage" epub:type="titlepage"><h1>${xmlEscape(title)}</h1>${author ? `<p class="author">${xmlEscape(author)}</p>` : ''}</section>`)}
+  ];
+  const items = [], navLis = [], ncxPoints = [];
+  chapters.forEach((c, i) => {
+    const id = `chap${i + 1}`;
+    const heading = c.heading || title;
+    const body = toBlocks(c.text).map(b => b.type === 'break' ? '<hr class="scene"/>' : `<p>${runsToHtml(b.text)}</p>`).join('\n');
+    files.push({name: `OEBPS/${id}.xhtml`, data: epubXhtml(heading,
+      `<section epub:type="chapter"><h1 class="chapter">${xmlEscape(heading)}</h1>\n${body}</section>`)});
+    items.push(id);
+    navLis.push(`<li><a href="${id}.xhtml">${xmlEscape(heading)}</a></li>`);
+    ncxPoints.push(`<navPoint id="np${i + 1}" playOrder="${i + 2}"><navLabel><text>${xmlEscape(heading)}</text></navLabel><content src="${id}.xhtml"/></navPoint>`);
+  });
+  files.push({name: 'OEBPS/nav.xhtml', data: epubXhtml('Índice',
+    `<nav epub:type="toc" id="toc"><h1>Índice</h1><ol>${navLis.join('')}</ol></nav>`)});
+  files.push({name: 'OEBPS/toc.ncx', data: `<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+<head><meta name="dtb:uid" content="${uid}"/></head>
+<docTitle><text>${xmlEscape(title)}</text></docTitle>
+<navMap><navPoint id="np0" playOrder="1"><navLabel><text>${xmlEscape(title)}</text></navLabel><content src="title.xhtml"/></navPoint>${ncxPoints.join('')}</navMap>
+</ncx>`});
+  files.push({name: 'OEBPS/content.opf', data: `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="pt-PT">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:identifier id="bookid">${uid}</dc:identifier>
+<dc:title>${xmlEscape(title)}</dc:title>
+<dc:language>pt-PT</dc:language>
+${author ? `<dc:creator>${xmlEscape(author)}</dc:creator>` : ''}
+<meta property="dcterms:modified">${modified}</meta>
+</metadata>
+<manifest>
+<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="css" href="style.css" media-type="text/css"/>
+<item id="title" href="title.xhtml" media-type="application/xhtml+xml"/>
+${items.map(id => `<item id="${id}" href="${id}.xhtml" media-type="application/xhtml+xml"/>`).join('\n')}
+</manifest>
+<spine toc="ncx">
+<itemref idref="title"/>
+${items.map(id => `<itemref idref="${id}"/>`).join('\n')}
+</spine>
+</package>`});
+  return makeZip(files);
+}
+
+/* ---- DOCX (WordprocessingML) ---- */
+
+function docxRuns(text){
+  return inlineRuns(text).map(r => {
+    const props = (r.b ? '<w:b/>' : '') + (r.i ? '<w:i/>' : '');
+    return `<w:r>${props ? `<w:rPr>${props}</w:rPr>` : ''}<w:t xml:space="preserve">${xmlEscape(r.text)}</w:t></w:r>`;
+  }).join('');
+}
+
+function buildDocx(title, author, chapters){
+  const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const paras = [];
+  paras.push(`<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr>${docxRuns(title)}</w:p>`);
+  if(author) paras.push(`<w:p><w:pPr><w:pStyle w:val="Subtitle"/></w:pPr>${docxRuns(author)}</w:p>`);
+  chapters.forEach(c => {
+    if(c.heading) paras.push(`<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>${docxRuns(c.heading)}</w:p>`);
+    else paras.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+    let first = true;
+    for(const b of toBlocks(c.text)){
+      if(b.type === 'break'){
+        paras.push('<w:p><w:pPr><w:pStyle w:val="SceneBreak"/></w:pPr><w:r><w:t>* * *</w:t></w:r></w:p>');
+        first = true;
+      } else {
+        paras.push(`<w:p><w:pPr><w:pStyle w:val="${first ? 'FirstParagraph' : 'BodyText'}"/></w:pPr>${docxRuns(b.text)}</w:p>`);
+        first = false;
+      }
+    }
+  });
+  const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document ${W}><w:body>${paras.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+  const font = '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia" w:cs="Georgia"/>';
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles ${W}>
+<w:docDefaults><w:rPrDefault><w:rPr>${font}<w:sz w:val="24"/><w:lang w:val="pt-PT"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="0" w:line="360" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+<w:style w:type="paragraph" w:styleId="BodyText"><w:name w:val="Body Text"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:ind w:firstLine="567"/><w:jc w:val="both"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="FirstParagraph"><w:name w:val="First Paragraph"/><w:basedOn w:val="BodyText"/><w:qFormat/><w:pPr><w:ind w:firstLine="0"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="4000" w:after="480"/><w:jc w:val="center"/></w:pPr><w:rPr><w:sz w:val="56"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:i/><w:sz w:val="28"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="FirstParagraph"/><w:qFormat/><w:pPr><w:keepNext/><w:pageBreakBefore/><w:spacing w:before="1440" w:after="720"/><w:jc w:val="center"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:sz w:val="36"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="SceneBreak"><w:name w:val="Scene Break"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="240"/><w:jc w:val="center"/></w:pPr></w:style>
+</w:styles>`;
+  const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const core = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<dc:title>${xmlEscape(title)}</dc:title>${author ? `<dc:creator>${xmlEscape(author)}</dc:creator>` : ''}<dc:language>pt-PT</dc:language>
+<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>
+</cp:coreProperties>`;
+  return makeZip([
+    {name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>`},
+    {name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+</Relationships>`},
+    {name: 'word/_rels/document.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`},
+    {name: 'word/document.xml', data: document},
+    {name: 'word/styles.xml', data: styles},
+    {name: 'docProps/core.xml', data: core}
+  ]);
+}
+
+function exportAs(format){
+  const chapters = exportChapters();
+  if(!chapters.length || !chapters.some(c => c.text.trim())){ setStatus('ainda não há texto para exportar.', true); return; }
+  const title = ($('bookTitle').value || '').trim() || bookTitle();
+  const author = $('exportAuthor').value.trim();
+  const chat = chats[currentChatId];
+  if(chat && $('bookTitle').value.trim()){ chat.bookTitle = $('bookTitle').value.trim(); persistChats(); }
+  const base = fileBaseName();
+  try{
+    if(format === 'txt') saveBlob(new Blob([compileStory()], {type: 'text/plain;charset=utf-8'}), base + '.txt');
+    else if(format === 'md') saveBlob(new Blob([exportMarkdown(title, author, chapters)], {type: 'text/markdown;charset=utf-8'}), base + '.md');
+    else if(format === 'epub') saveBlob(new Blob([buildEpub(title, author, chapters)], {type: 'application/epub+zip'}), base + '.epub');
+    else if(format === 'docx') saveBlob(new Blob([buildDocx(title, author, chapters)], {type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}), base + '.docx');
+    setStatus(`exportado: ${base}.${format} (${chapters.length} ${mode === 'author' ? 'capítulos' : 'secção'}).`);
+  }catch(err){
+    setStatus('erro ao exportar: ' + err.message, true);
+  }
 }
 
 function downloadJSON(){
@@ -3899,6 +4233,7 @@ function downloadJSON(){
     bannedPhrases: chat.bannedPhrases || '', bannedInPrompt: chat.bannedInPrompt !== false,
     pov: chat.pov || '', tense: chat.tense || '',
     characters: chat.characters || [], timeline: chat.timeline || [], sendTimeline: !!chat.sendTimeline,
+    bookTitle: chat.bookTitle || '',
     history: history
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json;charset=utf-8'});
@@ -3945,6 +4280,7 @@ $('importInput').addEventListener('change', async (e) => {
     if(Array.isArray(data.characters)) chat.characters = data.characters.map(sanitizeCharacter).filter(Boolean);
     if(Array.isArray(data.timeline)) chat.timeline = data.timeline.map(sanitizeEvent).filter(Boolean);
     if(typeof data.sendTimeline === 'boolean') chat.sendTimeline = data.sendTimeline;
+    if(typeof data.bookTitle === 'string') chat.bookTitle = data.bookTitle.slice(0, 200);
     chats[id] = chat;
     loadChatIntoMemory(id);
     persistChats(id);
@@ -3959,7 +4295,7 @@ $('importInput').addEventListener('change', async (e) => {
 
 // Global settings (providers, generation). The system prompt, summary and
 // lore selection are per story and live in the story itself.
-const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider'];
+const PERSIST_KEYS = ['pA-label','pA-url','pA-model','pA-key','pA-maxTokens','pA-temperature','pA-thinking','pA-reasoningEffort','pA-extraBody','pB-label','pB-url','pB-model','pB-key','pB-maxTokens','pB-temperature','pB-thinking','pB-reasoningEffort','pB-extraBody','rememberKeys','autoContinue','maxContinues','wordFloor','failover','writeMode','plannerProvider','reviewBeats','alternateRounds','streaming','requestTimeout','contextWords','autoSummary','proxyUrl','activeProvider','exportAuthor','exportStrip'];
 const KEY_IDS = ['pA-key', 'pB-key'];
 const SESSION_KEY_PREFIX = 'dualApiWriterKey:';
 
@@ -4033,6 +4369,13 @@ $('systemPrompt').addEventListener('input', () => {
   persistChats();
   updateMeter();
 });
+$('bookTitle').addEventListener('input', () => {
+  const chat = chats[currentChatId];
+  if(!chat) return;
+  chat.bookTitle = $('bookTitle').value.trim();
+  persistChats();
+});
+
 // Prose settings: saved per story; highlights refresh shortly after typing stops.
 let proseTimer = null;
 function onProseSettingsChange(){

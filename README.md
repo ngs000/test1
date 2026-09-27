@@ -80,7 +80,8 @@ Then, in the sidebar:
 
 **Data**
 - Stored in IndexedDB (no 5MB localStorage limit); older localStorage data is migrated automatically.
-- Multiple stories, `.txt` export, JSON backup and import.
+- Multiple stories, JSON backup and import.
+- **Exportar…**: `.txt`, `.md`, **`.epub`** (title page, table of contents, one file per chapter; passes EPUBCheck with no errors or warnings) and **`.docx`** (title page, each chapter on a new page, book-style paragraphs). Book title (per story) and author are set in the export panel; `*italic*`/`**bold**` become real formatting and `* * *` lines become scene breaks. "Remover blocos de estrutura" (on by default) strips `<plan>`, `<ledger>`, `<self-check>` and `[DIRECTIONS]` from exports and "Copiar tudo". Everything is built in the browser (small built-in ZIP writer, no libraries).
 - Option to keep API keys only for the current tab session.
 - Per-provider **extra body JSON** (e.g. `{"frequency_penalty": 0.3}`; `null` removes a field such as `{"thinking": null}`).
 
@@ -104,7 +105,7 @@ Implemented from the audit: all listed bugs (B1–B21), the context manager (F1)
 4. ~~More dual-API modes (rest of F4)~~ — done: outline → prose pipeline, alternating providers between continuation rounds (compare mode is covered by variants).
 5. ~~Prose tooling (F9)~~ — done.
 6. ~~Continuity tracker (F8)~~ — done.
-7. **Exports (F11)** — Markdown with headings, EPUB, DOCX.
+7. ~~Exports (F11)~~ — done.
 8. **Smaller items** — lore token budget cap; option to fail over immediately instead of retrying first; word floor only in Author mode; search & replace; model list from `/models`; request/cost log (F14–F17).
 
 Known limitations:

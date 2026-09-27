@@ -256,6 +256,11 @@
   .ol-row.short .ol-bar span{ background:#e0a86b; }
   .ol-row .ol-words{ font-size:11px; color:var(--muted); margin-top:3px; }
   .ol-row .mini-actions{ margin-top:5px; }
+  .var-nav{ display:inline-flex; align-items:center; gap:2px; margin-left:6px; }
+  .var-nav button{ background:none; border:1px solid var(--border); color:var(--muted); border-radius:4px; padding:0 6px; font-size:11px; line-height:16px; cursor:pointer; }
+  .var-nav button:hover:not(:disabled){ color:var(--text); border-color:var(--accent); }
+  .var-nav button:disabled{ opacity:0.35; cursor:default; }
+  .var-nav .var-pos{ font-size:11px; color:var(--gold); padding:0 4px; }
 </style>
 </head>
 <body>
@@ -607,6 +612,7 @@ function renderEntry(entry, idx){
     badge.textContent = entry.provider || '?';
     metaNode = document.createTextNode(metaText(entry));
     meta.append(badge, metaNode);
+    if(entry.variants && entry.variants.length > 1) meta.appendChild(variantNav(entry));
   }
   wrap.appendChild(meta);
 
@@ -683,6 +689,25 @@ function renderEntry(entry, idx){
     regenBtn.textContent = 'regenerar';
     regenBtn.onclick = () => regenerate(idx);
     actions.appendChild(regenBtn);
+    const varBtn = document.createElement('button');
+    varBtn.textContent = 'nova variante';
+    varBtn.title = 'Escrever outra versão deste capítulo a partir da mesma indicação (as anteriores ficam, para comparares)';
+    varBtn.onclick = () => generateVariant(entry);
+    actions.appendChild(varBtn);
+    const otherLetter = otherProvider($('activeProvider').value);
+    if(providerReady(otherLetter)){
+      const varOther = document.createElement('button');
+      varOther.textContent = `variante com ${providerConfig(otherLetter).label}`;
+      varOther.title = 'Nova variante escrita pelo outro provider, para comparar';
+      varOther.onclick = () => generateVariant(entry, otherProvider($('activeProvider').value));
+      actions.appendChild(varOther);
+    }
+    if(entry.variants && entry.variants.length > 1){
+      const delVar = document.createElement('button');
+      delVar.textContent = 'apagar variante';
+      delVar.onclick = () => deleteVariant(entry);
+      actions.appendChild(delVar);
+    }
     const reviseBtn = document.createElement('button');
     reviseBtn.textContent = 'rever';
     reviseBtn.title = 'Rever o capítulo (ou o texto selecionado) com uma instrução';
@@ -788,10 +813,14 @@ async function regenerate(idx){
       setStatus('a história mudou entretanto — esta regeneração não foi aplicada.', true);
       return;
     }
-    hist[currentIdx] = {
+    const fresh = {
       role: 'assistant', content, provider: providerLabel, words: wordCount(content), finishReason,
       versions: pushVersion(entry.versions, entry, 'antes de regenerar')
     };
+    // Chapter metadata belongs to the chapter, not to one text of it.
+    for(const k of ['title', 'status', 'variants', 'variantIndex']) if(entry[k] !== undefined) fresh[k] = entry[k];
+    hist[currentIdx] = fresh;
+    if(fresh.variants) syncVariant(fresh);
     commitChat(chatId);
     const staleSummary = (chats[chatId].summaryCovered || 0) > 0 ? ' O resumo pode estar desatualizado — usa "refazer do zero" se necessário.' : '';
     setStatus([failoverNote, floorNote, staleSummary].join(' ').trim(), !!(floorNote || failoverNote));
@@ -1826,6 +1855,7 @@ function mergeWithNext(k){
   if(!confirm('Juntar este capítulo com o seguinte num só? (a versão atual fica em "versões")')) return;
   const target = a.chapters[0];
   target.versions = pushVersion(target.versions, target, 'antes de juntar');
+  delete target.variants; delete target.variantIndex; // other variants cover only half of the new chapter
   const parts = a.chapters.concat(b.chapters).map(c => c.content.trim());
   target.content = parts.join('\n\n');
   target.words = wordCount(target.content);
@@ -1854,6 +1884,7 @@ function splitChapter(entry){
   if(!before || !after){ setStatus('o ponto de divisão tem de ficar a meio do capítulo.', true); return; }
   if(!confirm(`Dividir aqui? Fica com ${wordCount(before)} + ${wordCount(after)} palavras.`)) return;
   entry.versions = pushVersion(entry.versions, entry, 'antes de dividir');
+  delete entry.variants; delete entry.variantIndex; // other variants are whole chapters, not this half
   entry.content = before;
   entry.words = wordCount(before);
   const idx = history.indexOf(entry);
@@ -1957,7 +1988,8 @@ function renderOutline(){
       bar.appendChild(fill);
       const w = document.createElement('div');
       w.className = 'ol-words';
-      w.textContent = `${words.toLocaleString('pt-PT')} palavras` + (short ? ' — bem abaixo da média' : '');
+      const nVar = main.variants && main.variants.length > 1 ? ` · variante ${main.variantIndex + 1}/${main.variants.length}` : '';
+      w.textContent = `${words.toLocaleString('pt-PT')} palavras` + nVar + (short ? ' — bem abaixo da média' : '');
       row.append(bar, w);
     }
     const acts = document.createElement('div');
@@ -2047,12 +2079,163 @@ function pushVersion(versions, entry, note){
   return [...(versions || []), snapshot(entry, note)].slice(-MAX_VERSIONS);
 }
 
-function sanitizeVersions(list){
+/* ---------------- variants (swipes) ---------------- */
+
+// entry.variants holds every alternative text of a chapter, entry.variantIndex
+// the one shown. The entry's own fields are always the shown variant; the
+// slot is refreshed from them before switching, so edits/revisions/continues
+// made to the shown text are never lost.
+const MAX_VARIANTS = 20;
+
+function variantFields(entry){
+  return {content: entry.content, provider: entry.provider || '', words: entry.words || wordCount(entry.content),
+          finishReason: entry.finishReason || '', savedAt: Date.now()};
+}
+
+function syncVariant(entry){
+  if(!entry.variants) return;
+  entry.variants[entry.variantIndex] = variantFields(entry);
+}
+
+function ensureVariants(entry){
+  if(!entry.variants || !entry.variants.length){
+    entry.variants = [variantFields(entry)];
+    entry.variantIndex = 0;
+  } else {
+    syncVariant(entry);
+  }
+}
+
+function showVariant(entry, i){
+  const v = entry.variants[i];
+  entry.variantIndex = i;
+  entry.content = v.content;
+  entry.provider = v.provider;
+  entry.words = wordCount(v.content);
+  entry.finishReason = v.finishReason;
+}
+
+function switchVariant(entry, dir){
+  if(generating){ setStatus('espera que a geração acabe para mudar de variante.', true); return; }
+  if(!entry.variants) return;
+  const i = entry.variantIndex + dir;
+  if(i < 0 || i >= entry.variants.length) return;
+  syncVariant(entry);
+  showVariant(entry, i);
+  rerenderAll();
+  updateStats();
+  const chat = chats[currentChatId];
+  if(chat && (chat.summaryCovered || 0) > 0) setStatus('variante trocada — o resumo pode precisar de "refazer do zero".');
+}
+
+function variantNav(entry){
+  const nav = document.createElement('span');
+  nav.className = 'var-nav';
+  const prev = document.createElement('button');
+  prev.textContent = '‹';
+  prev.title = 'variante anterior';
+  prev.disabled = entry.variantIndex <= 0;
+  prev.onclick = () => switchVariant(entry, -1);
+  const pos = document.createElement('span');
+  pos.className = 'var-pos';
+  pos.textContent = `${entry.variantIndex + 1}/${entry.variants.length}`;
+  const next = document.createElement('button');
+  next.textContent = '›';
+  next.title = 'variante seguinte';
+  next.disabled = entry.variantIndex >= entry.variants.length - 1;
+  next.onclick = () => switchVariant(entry, 1);
+  nav.append(prev, pos, next);
+  return nav;
+}
+
+function deleteVariant(entry){
+  if(generating){ setStatus('espera que a geração acabe.', true); return; }
+  if(!entry.variants || entry.variants.length < 2) return;
+  if(!confirm(`Apagar a variante ${entry.variantIndex + 1} de ${entry.variants.length}? (fica em "versões")`)) return;
+  entry.versions = pushVersion(entry.versions, entry, 'variante apagada');
+  entry.variants.splice(entry.variantIndex, 1);
+  showVariant(entry, Math.min(entry.variantIndex, entry.variants.length - 1));
+  if(entry.variants.length === 1){ delete entry.variants; delete entry.variantIndex; }
+  rerenderAll();
+  updateStats();
+}
+
+// Writes a new variant of a chapter from the same brief/context, streaming it
+// in as the shown text; the previous variants stay one click away.
+async function generateVariant(entry, letterOverride){
+  const idx = history.indexOf(entry);
+  if(idx === -1 || entry.role !== 'assistant') return;
+  if(entry.variants && entry.variants.length >= MAX_VARIANTS){
+    setStatus(`máximo de ${MAX_VARIANTS} variantes — apaga alguma primeiro.`, true);
+    return;
+  }
+  if(!beginGeneration()) return;
+  const chatId = genChatId;
+  const letter = letterOverride || $('activeProvider').value;
+  ensureVariants(entry);
+  const prevIndex = entry.variantIndex;
+  entry.variants.push({content: '', provider: providerConfig(letter).label, words: 0, finishReason: 'a gerar', savedAt: Date.now()});
+  showVariant(entry, entry.variants.length - 1);
+  const slot = entry.variantIndex;
+  commitChat(chatId);
+  try{
+    const messages = buildMessages(null, history.slice(0, idx));
+    const onStream = (textSoFar, providerLabel) => {
+      entry.content = textSoFar;
+      entry.provider = providerLabel;
+      entry.finishReason = 'a gerar';
+      liveUpdate(chatId, entry);
+      persistWhileStreaming(chatId);
+    };
+    const onProgress = (full, providerLabel, finishReason) => {
+      entry.content = full;
+      entry.words = wordCount(full);
+      entry.provider = providerLabel;
+      entry.finishReason = finishReason;
+      syncVariant(entry);
+      commitChat(chatId);
+    };
+    const {floorNote, failoverNote} = await generateWithAutoContinue(letter, messages, {onProgress, onStream});
+    syncVariant(entry);
+    commitChat(chatId);
+    const msg = `variante ${slot + 1} de ${entry.variants.length} — usa ‹ › para comparar.`;
+    setStatus([msg, failoverNote, floorNote].join(' ').trim(), !!(floorNote || failoverNote));
+  }catch(err){
+    const aborted = err.name === 'AbortError';
+    if(entry.content.trim()){
+      entry.words = wordCount(entry.content);
+      entry.finishReason = aborted ? 'interrompido' : 'erro';
+      syncVariant(entry);
+      setStatus(`${aborted ? 'variante interrompida' : err.message} — o texto recebido ficou como variante ${slot + 1}.`, !aborted);
+    } else {
+      // Nothing written: drop the empty slot and show what was there before.
+      entry.variants.splice(slot, 1);
+      showVariant(entry, Math.min(prevIndex, entry.variants.length - 1));
+      if(entry.variants.length === 1){ delete entry.variants; delete entry.variantIndex; }
+      setStatus(aborted ? 'variante interrompida.' : err.message, !aborted);
+    }
+    commitChat(chatId);
+  }finally{
+    endGeneration();
+  }
+}
+
+function importVariants(h){
+  if(!Array.isArray(h.variants) || h.variants.length < 2) return {};
+  const variants = sanitizeVersions(h.variants.slice(0, MAX_VARIANTS), MAX_VARIANTS);
+  if(variants.length < 2) return {};
+  const i = Math.min(Math.max(0, Number(h.variantIndex) || 0), variants.length - 1);
+  // The entry text is authoritative for the shown variant.
+  variants[i] = {...variants[i], content: h.content, words: wordCount(h.content)};
+  return {variants, variantIndex: i};
+}
+
+function sanitizeVersions(list, cap = MAX_VERSIONS){
   return list
     .filter(v => v && typeof v.content === 'string')
     .map(v => ({content: v.content, provider: String(v.provider || ''), words: wordCount(v.content),
                 finishReason: String(v.finishReason || ''), note: String(v.note || ''), savedAt: Number(v.savedAt) || 0}))
-    .slice(-MAX_VERSIONS);
+    .slice(-cap);
 }
 
 // Character offsets of the current selection inside `container` (whose text
@@ -2816,7 +2999,8 @@ $('importInput').addEventListener('change', async (e) => {
            words: wordCount(h.content), ...(h.finishReason ? {finishReason: String(h.finishReason)} : {}),
            ...(Array.isArray(h.versions) ? {versions: sanitizeVersions(h.versions)} : {}),
            ...(typeof h.title === 'string' && h.title ? {title: h.title.slice(0, 120)} : {}),
-           ...(CHAPTER_STATUSES.includes(h.status) ? {status: h.status} : {})});
+           ...(CHAPTER_STATUSES.includes(h.status) ? {status: h.status} : {}),
+           ...importVariants(h)});
     if(!imported.length) throw new Error('não contém entradas válidas.');
     saveHistory();
     const id = 'chat_' + Date.now();
@@ -2928,6 +3112,9 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault();
   e.returnValue = '';
 });
+
+// "variante com <outro>" buttons name the provider that is not selected.
+$('activeProvider').addEventListener('change', () => { if(chats[currentChatId]) rerenderAllNoSave(); });
 
 $('input').addEventListener('keydown', (e)=>{
   if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
